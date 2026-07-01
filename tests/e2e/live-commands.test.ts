@@ -2,8 +2,9 @@ import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { encryptFragment } from '@nowhere/codec';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
@@ -12,7 +13,7 @@ import { publishToRelays, destroyPool } from '../../src/lib/relay.js';
 import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
-const cwd = '/Users/breno/Documents/code/PROJECTS/HRF_GRANT/nowhere-cli';
+const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
@@ -104,7 +105,47 @@ async function withTempDir(prefix: string, fn: (path: string) => Promise<void>) 
   }
 }
 
-function makeTorrentBytes(): Uint8Array {
+async function withNodeImport(moduleSource: string, fn: (env: NodeJS.ProcessEnv) => Promise<void>) {
+  await withTempDir('nowhere-cli-live-import-', async (dir) => {
+    const modulePath = join(dir, 'register.mjs');
+    await writeFile(modulePath, moduleSource);
+    const importOption = `--import=${pathToFileURL(modulePath).href}`;
+    await fn({
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, importOption].filter(Boolean).join(' '),
+    });
+  });
+}
+
+async function withLightningInvoiceMock(invoicePrefix: string, fn: (env: NodeJS.ProcessEnv) => Promise<void>) {
+  const invoiceStem = JSON.stringify(`lnbc-${invoicePrefix}-`);
+  await withNodeImport(
+    `
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url === 'https://seller.test/.well-known/lnurlp/tips') {
+    return new Response(JSON.stringify({
+      callback: 'https://seller.test/lnurl/callback',
+      minSendable: 1000,
+      maxSendable: 100000000,
+      metadata: '[]',
+      tag: 'payRequest',
+    }), { status: 200 });
+  }
+  if (url.startsWith('https://seller.test/lnurl/callback')) {
+    const amount = new URL(url).searchParams.get('amount');
+    return new Response(JSON.stringify({
+      pr: ${invoiceStem} + amount,
+      routes: [],
+    }), { status: 200 });
+  }
+  throw new Error('Unexpected fetch URL in live command test: ' + url);
+};
+`,
+    fn,
+  );
+}
+
+function makeTorrentBytes(title = 'Archive'): Uint8Array {
   const torrent = [
     'd',
     '8:announce',
@@ -117,7 +158,7 @@ function makeTorrentBytes(): Uint8Array {
     '6:length',
     'i1024e',
     '4:name',
-    '7:Archive',
+    `${title.length}:${title}`,
     '12:piece length',
     'i16384e',
     '6:pieces',
@@ -934,7 +975,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('fundraiser commands list donation methods', async () => {
+  test('fundraiser donation commands list methods and generate invoices', async () => {
     await withJsonFile(
       {
         name: 'Freedom Fund',
@@ -956,11 +997,27 @@ describe('relay-backed CLI commands', () => {
         expect(methods.methods[0]?.id).toBe('lightning');
         expect(methods.methods[1]?.id).toBe('custom_0');
         expect(methods.methods[2]?.showQr).toBe(true);
+
+        await withLightningInvoiceMock('fundraiser', async (env) => {
+          const invoice = await cliWithEnv(
+            env,
+            'fundraiser',
+            'donate',
+            'invoice',
+            fundraiser.fragment,
+            '--sats',
+            '2100',
+            '--json',
+          );
+
+          expect(invoice.method.id).toBe('lightning');
+          expect(invoice.invoice).toBe('lnbc-fundraiser-2100000');
+        });
       },
     );
   });
 
-  test('message commands list tip methods', async () => {
+  test('message tip commands list methods and generate invoices', async () => {
     await withJsonFile(
       {
         name: 'Signal Boost',
@@ -983,6 +1040,22 @@ describe('relay-backed CLI commands', () => {
         expect(methods.methods[0]?.id).toBe('lightning');
         expect(methods.methods[1]?.id).toBe('custom_0');
         expect(methods.methods[2]?.showQr).toBe(true);
+
+        await withLightningInvoiceMock('message', async (env) => {
+          const invoice = await cliWithEnv(
+            env,
+            'message',
+            'tip',
+            'invoice',
+            message.fragment,
+            '--sats',
+            '2100',
+            '--json',
+          );
+
+          expect(invoice.method.id).toBe('lightning');
+          expect(invoice.invoice).toBe('lnbc-message-2100000');
+        });
       },
     );
   });
@@ -1542,6 +1615,7 @@ describe('relay-backed CLI commands', () => {
 
             expect(checkedBeforePublish.duplicate).toBeNull();
             expect(checkedBeforePublish.torrent.category).toBe('docs > manuals');
+            expect(checkedBeforePublish.torrent.refs).toEqual(['ref:1']);
             expect(checkedBeforePublish.settings.rules).toContain('No malware');
 
             const torrent = await cli(
@@ -1565,6 +1639,7 @@ describe('relay-backed CLI commands', () => {
             );
 
             expect(torrent.postTag).toHaveLength(32);
+            expect(torrent.replyPubkey).toMatch(/^[0-9a-f]{64}$/);
 
             const checkedAfterPublish = await cli(
               'forum',
@@ -1594,6 +1669,7 @@ describe('relay-backed CLI commands', () => {
             expect(torrents.torrents).toHaveLength(1);
             expect(torrents.torrents[0]?.torrentData.title).toBe('Archive');
             expect(torrents.torrents[0]?.torrentData.category).toBe('docs > manuals');
+            expect(torrents.torrents[0]?.torrentData.refs).toEqual(['ref:1']);
             expect(torrents.torrents[0]?.magnetLink).toContain('magnet:?xt=urn:btih:');
 
             await withJsonFile(
@@ -1669,6 +1745,7 @@ describe('relay-backed CLI commands', () => {
 
               expect(announcements.announcements).toHaveLength(1);
               expect(announcements.announcements[0]?.roomName).toBe('Logistics');
+              expect(announcements.announcements[0]?.accessCode).toBe('shared-secret');
             },
           );
 

@@ -1,15 +1,16 @@
 import { describe, expect, test } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay } from '../support/mockRelay.js';
 import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
-const cwd = '/Users/breno/Documents/code/PROJECTS/HRF_GRANT/nowhere-cli';
+const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
