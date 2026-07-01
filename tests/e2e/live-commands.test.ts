@@ -295,6 +295,7 @@ describe('relay-backed CLI commands', () => {
   test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
+    const session = generateSecretMaterial();
 
     try {
       await withJsonFile(
@@ -593,6 +594,8 @@ describe('relay-backed CLI commands', () => {
                 chatPath,
                 '--secret',
                 owner.nsec,
+                '--session-secret',
+                session.secretHex,
                 '--relay',
                 relay.url,
                 '--json',
@@ -612,10 +615,50 @@ describe('relay-backed CLI commands', () => {
 
               expect(listed.messages).toHaveLength(2);
               expect(listed.messages.some((message: { payload: { b: string } }) => message.payload.b === 'General chat online')).toBe(true);
+              expect(listed.messages.some((message: { payload: { sp?: string } }) => message.payload.sp === session.pubkeyHex)).toBe(true);
               expect(
                 listed.messages.some((message: { payload: { room?: { name: string } | string } }) =>
                   typeof message.payload.room === 'object' && message.payload.room?.name === 'Logistics'),
               ).toBe(true);
+            },
+          );
+
+          await withJsonFile(
+            { message: 'Encrypted side-channel' },
+            async (privatePath) => {
+              const sent = await cli(
+                'forum',
+                'private',
+                'send',
+                forum.fragment,
+                '--recipient-session-pubkey',
+                session.pubkeyHex,
+                '--input',
+                privatePath,
+                '--secret',
+                owner.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(sent.recipientSessionPubkey).toBe(session.pubkeyHex);
+
+              const listed = await cli(
+                'forum',
+                'private',
+                'list',
+                forum.fragment,
+                '--session-secret',
+                session.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(listed.messages).toHaveLength(1);
+              expect(listed.messages[0]?.payload.b).toBe('Encrypted side-channel');
+              expect(listed.messages[0]?.peerPubkey).toBe(owner.pubkeyHex);
             },
           );
         },

@@ -22,6 +22,7 @@ import {
 } from './lib/petition-live.js';
 import {
   listForumPosts,
+  listPrivateChatMessages,
   listForumReplies,
   listForumTorrentReplies,
   listForumTorrents,
@@ -29,6 +30,7 @@ import {
   listRoomAnnouncements,
   listRoomChatMessages,
   publishForumPostFromInput,
+  publishPrivateChatMessage,
   publishForumReplyFromInput,
   publishForumTorrentReplyFromInput,
   publishForumTorrentFromInput,
@@ -1037,6 +1039,7 @@ forumChat
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--session-secret <secret>', 'Optional stable session secret to advertise for private chat.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
@@ -1047,9 +1050,61 @@ forumChat
         forumInput,
         message: readString(payload, 'message') as string,
         secret: options.secret,
+        sessionSecret: options.sessionSecret,
         salt: options.salt,
         relays: getRelayList(options.relay),
       })),
+      Boolean(options.json),
+    );
+  });
+
+const forumPrivate = forum.command('private').description('Publish or inspect private forum chat messages.');
+
+forumPrivate
+  .command('send')
+  .description('Publish an encrypted private forum message to a session pubkey.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--recipient-session-pubkey <pubkey>', 'Recipient stable session pubkey (hex).')
+  .requiredOption('--input <path>', 'Path to the private chat JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const payload = await readObjectInput(options.input, 'Expected a JSON private chat payload.');
+    printOutput(
+      await withForumPoolCleanup(() => publishPrivateChatMessage({
+        forumInput,
+        recipientSessionPubkey: options.recipientSessionPubkey,
+        message: readString(payload, 'message') as string,
+        secret: options.secret,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      })),
+      Boolean(options.json),
+    );
+  });
+
+forumPrivate
+  .command('list')
+  .description('List encrypted private forum messages for a stable session secret.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--session-secret <secret>', 'Stable session secret used to decrypt incoming private messages.')
+  .option('--peer-pubkey <pubkey>', 'Only include messages from this author pubkey.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    printOutput(
+      {
+        messages: await withForumPoolCleanup(() => listPrivateChatMessages({
+          forumInput,
+          sessionSecret: options.sessionSecret,
+          peerPubkey: options.peerPubkey,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+      },
       Boolean(options.json),
     );
   });

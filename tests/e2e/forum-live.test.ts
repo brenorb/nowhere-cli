@@ -10,6 +10,7 @@ import {
   listForumTorrentReplies,
   listForumTorrents,
   listGeneralChatMessages,
+  listPrivateChatMessages,
   listRoomAnnouncements,
   listRoomChatMessages,
   publishForumPostFromInput,
@@ -17,6 +18,7 @@ import {
   publishForumTorrentReplyFromInput,
   publishForumTorrentFromInput,
   publishGeneralChatMessage,
+  publishPrivateChatMessage,
   publishRoomAnnouncement,
   publishRoomChatMessage,
   TORRENT_TOPIC_SEED,
@@ -170,21 +172,41 @@ describe('forum runtime module', () => {
     expect(replies[0]?.payload.b).toBe('Seeding confirmed');
   });
 
-  test('publishes and lists general chat messages', async () => {
+  test('publishes general chat with a session pubkey and decrypts private chat for that session', async () => {
     relay = await startMockRelay();
     const owner = generateSecretMaterial();
+    const session = generateSecretMaterial();
     const forumFragment = makeForum(owner.nowherePubkey);
 
     await publishGeneralChatMessage({
       forumInput: forumFragment,
       message: 'General chat online',
       secret: owner.nsec,
+      sessionSecret: session.secretHex,
       relays: [relay.url],
     });
 
     const messages = await listGeneralChatMessages({ forumInput: forumFragment, relays: [relay.url] });
     expect(messages).toHaveLength(1);
     expect(messages[0]?.payload.b).toBe('General chat online');
+    expect(messages[0]?.payload.sp).toBe(session.pubkeyHex);
+
+    await publishPrivateChatMessage({
+      forumInput: forumFragment,
+      recipientSessionPubkey: session.pubkeyHex,
+      message: 'Encrypted side-channel',
+      secret: owner.secretHex,
+      relays: [relay.url],
+    });
+
+    const privateMessages = await listPrivateChatMessages({
+      forumInput: forumFragment,
+      sessionSecret: session.nsec,
+      relays: [relay.url],
+    });
+    expect(privateMessages).toHaveLength(1);
+    expect(privateMessages[0]?.payload.b).toBe('Encrypted side-channel');
+    expect(privateMessages[0]?.peerPubkey).toBe(owner.pubkeyHex);
   });
 
   test('publishes room announcements and decrypts room chat with the shared access code', async () => {
