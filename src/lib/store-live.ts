@@ -1,4 +1,4 @@
-import { base64urlToHex, type Tag } from '@nowhere/codec';
+import { base64urlToHex, type Item, type StoreData, type Tag } from '@nowhere/codec';
 import { createHash, createHmac } from 'node:crypto';
 import { Filter } from 'nostr-tools/filter';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
@@ -118,6 +118,64 @@ export interface FetchedOrders {
   failedEventIds: string[];
 }
 
+export interface FetchOrdersByIdsInput {
+  storeUrl: string;
+  sellerSecret: string | Uint8Array;
+  orderIds: string[];
+  relayList?: string[];
+}
+
+export interface HistoricalRateResult {
+  satsPerUnit: number;
+  source: string;
+}
+
+export interface OrderVerification {
+  error: string | null;
+  expectedSubtotal: number;
+  expectedShipping: number;
+  expectedTotal: number;
+  historicalSatsPerUnit: number | null;
+  rateSource: string;
+  expectedSats: number | null;
+  expectedPaymentAmount: number | null;
+  paymentCurrencyLabel: string | null;
+  paymentAmountMatch: boolean | null;
+  paymentRateSource: string | null;
+  subtotalMatch: boolean | null;
+  shippingMatch: boolean | null;
+  totalMatch: boolean | null;
+}
+
+export interface VerifyStoreOrderOptions {
+  storeUrl: string;
+  order: OrderMessage;
+  receivedSats?: number;
+  storeRateOverride?: HistoricalRateResult;
+  paymentRateOverride?: HistoricalRateResult;
+}
+
+export interface VerifiedStoreOrder {
+  ok: boolean;
+  order: OrderMessage;
+  verification: OrderVerification;
+}
+
+export type StoreVerificationSource = 'receipt' | 'event' | 'order';
+
+export interface VerifyStoreOrderPayloadOptions {
+  storeUrl: string;
+  payload: unknown;
+  sellerSecret?: string | Uint8Array;
+  receivedSats?: number;
+  storeRateOverride?: HistoricalRateResult;
+  paymentRateOverride?: HistoricalRateResult;
+}
+
+export interface VerifiedStoreOrderPayload extends VerifiedStoreOrder {
+  source: StoreVerificationSource;
+}
+
 export interface PublishStatusInput {
   storeUrl: string;
   sellerSecret: string | Uint8Array;
@@ -211,6 +269,19 @@ function isStatusPayload(value: unknown): value is StatusPayload {
   return isRecord(value) && value.v === 1;
 }
 
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function centsToMajorUnits(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : value / 100;
+}
+
+function normalizeAmountForComparison(stored: number, expected: number): number {
+  const asMajorUnits = stored / 100;
+  return Math.abs(asMajorUnits - expected) <= Math.abs(stored - expected) ? asMajorUnits : stored;
+}
+
 function sortEventsDescending(events: Event[]): Event[] {
   return [...events].sort((left, right) => {
     if (left.created_at !== right.created_at) {
@@ -218,6 +289,245 @@ function sortEventsDescending(events: Event[]): Event[] {
     }
     return right.id.localeCompare(left.id);
   });
+}
+
+function getStoreCurrency(tags: Tag[]): string {
+  return tags.find((tag) => tag.key === '$')?.value ?? 'USD';
+}
+
+interface VerificationCartItem {
+  item: Item;
+  qty: number;
+  selectedVariant?: string;
+}
+
+function computeDiscount(cartItems: VerificationCartItem[], storeTags: Tag[]): { amount: number; label: string } {
+  const buyMoreTag = storeTags.find((tag) => tag.key === 'B');
+  if (!buyMoreTag?.value) {
+    return { amount: 0, label: '' };
+  }
+
+  const parts = buyMoreTag.value.split(':');
+  if (parts.length !== 2) {
+    return { amount: 0, label: '' };
+  }
+
+  const minQty = Number.parseInt(parts[0] ?? '', 10);
+  const percent = Number.parseInt(parts[1] ?? '', 10);
+  if (Number.isNaN(minQty) || Number.isNaN(percent) || minQty < 1 || percent < 1 || percent > 100) {
+    return { amount: 0, label: '' };
+  }
+
+  let discountTotal = 0;
+  for (const cartItem of cartItems) {
+    if (cartItem.qty >= minQty) {
+      discountTotal += cartItem.item.price * cartItem.qty * (percent / 100);
+    }
+  }
+
+  if (discountTotal === 0) {
+    return { amount: 0, label: '' };
+  }
+
+  let amount = round2(discountTotal);
+  const maxDiscountTag = storeTags.find((tag) => tag.key === 'X');
+  if (maxDiscountTag?.value) {
+    const maxDiscount = Number.parseInt(maxDiscountTag.value, 10) / 100;
+    if (maxDiscount > 0 && amount > maxDiscount) {
+      amount = maxDiscount;
+    }
+  }
+
+  return {
+    amount,
+    label: `Buy ${minQty}+ get ${percent}% off`,
+  };
+}
+
+function computeShipping(cartItems: VerificationCartItem[], storeTags: Tag[], buyerCountry?: string): number {
+  const freeTag = storeTags.find((tag) => tag.key === 'F');
+  if (freeTag) {
+    if (!freeTag.value) {
+      return 0;
+    }
+
+    const threshold = Number.parseInt(freeTag.value, 10);
+    if (!Number.isNaN(threshold) && threshold > 0) {
+      const subtotal = cartItems.reduce((sum, cartItem) => sum + cartItem.item.price * cartItem.qty, 0);
+      const subtotalCents = Math.round(subtotal * 100);
+      const storeCountry = storeTags.find((tag) => tag.key === 'L')?.value;
+      const isDomestic = Boolean(buyerCountry && storeCountry && buyerCountry === storeCountry);
+      const hasIntlTag = storeTags.some((tag) => tag.key === 'J');
+
+      if (subtotalCents >= threshold && (isDomestic || hasIntlTag)) {
+        return 0;
+      }
+    }
+  }
+
+  if (cartItems.every((cartItem) => cartItem.item.tags.some((tag) => tag.key === 'd'))) {
+    return 0;
+  }
+
+  const storeCountry = storeTags.find((tag) => tag.key === 'L')?.value;
+  const isDomestic = Boolean(buyerCountry && storeCountry && buyerCountry === storeCountry);
+
+  let baseRate: number;
+  let weightRate: number;
+  if (isDomestic) {
+    baseRate = Number.parseFloat(storeTags.find((tag) => tag.key === 's')?.value ?? '0') / 100;
+    weightRate = Number.parseFloat(storeTags.find((tag) => tag.key === 'h')?.value ?? '0') / 100;
+  } else {
+    const intlBase = storeTags.find((tag) => tag.key === 'S')?.value;
+    const domBase = storeTags.find((tag) => tag.key === 's')?.value;
+    baseRate = Number.parseFloat(intlBase ?? domBase ?? '0') / 100;
+
+    const intlWeight = storeTags.find((tag) => tag.key === 'H')?.value;
+    const domWeight = storeTags.find((tag) => tag.key === 'h')?.value;
+    weightRate = Number.parseFloat(intlWeight ?? domWeight ?? '0') / 100;
+  }
+
+  if (buyerCountry) {
+    const override = storeTags.find((tag) => tag.key === 'R' && tag.value?.startsWith(buyerCountry));
+    if (override?.value) {
+      return Number.parseFloat(override.value.slice(buyerCountry.length)) / 100;
+    }
+  }
+
+  let totalWeight = 0;
+  for (const cartItem of cartItems) {
+    if (cartItem.item.tags.some((tag) => tag.key === 'd')) {
+      continue;
+    }
+
+    const itemOverride = cartItem.item.tags.find((tag) => tag.key === 'i');
+    if (itemOverride?.value) {
+      return Number.parseFloat(itemOverride.value) / 100;
+    }
+
+    const weightTag = cartItem.item.tags.find((tag) => tag.key === 'W');
+    const weight = weightTag?.value ? Number.parseFloat(weightTag.value) : 0;
+    totalWeight += weight * cartItem.qty;
+  }
+
+  return baseRate + totalWeight * weightRate;
+}
+
+const historicalRateCache = new Map<string, HistoricalRateResult>();
+
+function historicalRateCacheKey(currency: string, timestamp: number): string {
+  return `${currency.toUpperCase()}:${timestamp}`;
+}
+
+async function fetchKrakenHistorical(currency: string, timestamp: number): Promise<number | null> {
+  try {
+    const pair = `XBT${currency.toUpperCase()}`;
+    const since = timestamp - 60;
+    const response = await fetch(
+      `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=1&since=${since}`,
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json() as { error?: string[]; result?: Record<string, unknown> };
+    if (data.error?.length) {
+      return null;
+    }
+
+    const pairData = Object.values(data.result ?? {}).find(Array.isArray) as unknown[][] | undefined;
+    if (!pairData?.length) {
+      return null;
+    }
+
+    let bestCandle = pairData[0];
+    for (const candle of pairData) {
+      if (Number(candle[0]) <= timestamp) {
+        bestCandle = candle;
+      } else {
+        break;
+      }
+    }
+
+    const closePrice = Number.parseFloat(String(bestCandle?.[4]));
+    if (!closePrice) {
+      return null;
+    }
+    return round2(100_000_000 / closePrice);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCoingeckoHistorical(currency: string, timestamp: number): Promise<number | null> {
+  try {
+    const date = new Date(timestamp * 1000);
+    const dd = String(date.getUTCDate()).padStart(2, '0');
+    const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const yyyy = date.getUTCFullYear();
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/coins/bitcoin/history?date=${dd}-${mm}-${yyyy}&localization=false`,
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json() as {
+      market_data?: { current_price?: Record<string, number> };
+    };
+    const pricePerBtc = data.market_data?.current_price?.[currency.toLowerCase()];
+    if (!pricePerBtc) {
+      return null;
+    }
+    return round2(100_000_000 / pricePerBtc);
+  } catch {
+    return null;
+  }
+}
+
+async function getHistoricalRate(currency: string, timestamp: number): Promise<HistoricalRateResult> {
+  if (currency.toUpperCase() === 'SAT' || currency.toUpperCase() === 'SATS') {
+    return { satsPerUnit: 1, source: 'native' };
+  }
+  if (currency.toUpperCase() === 'BTC') {
+    return { satsPerUnit: 100_000_000, source: 'native' };
+  }
+
+  const cacheKey = historicalRateCacheKey(currency, timestamp);
+  const cached = historicalRateCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const [krakenResult, coingeckoResult] = await Promise.allSettled([
+    fetchKrakenHistorical(currency, timestamp),
+    fetchCoingeckoHistorical(currency, timestamp),
+  ]);
+
+  const rates: number[] = [];
+  const sources: string[] = [];
+
+  if (krakenResult.status === 'fulfilled' && krakenResult.value !== null) {
+    rates.push(krakenResult.value);
+    sources.push('kraken');
+  }
+  if (coingeckoResult.status === 'fulfilled' && coingeckoResult.value !== null) {
+    rates.push(coingeckoResult.value);
+    sources.push('coingecko');
+  }
+
+  if (rates.length === 0) {
+    throw new Error('Failed to fetch historical exchange rate from any source');
+  }
+
+  const result = {
+    satsPerUnit: round2(rates.reduce((sum, rate) => sum + rate, 0) / rates.length),
+    source: sources.join('+'),
+  };
+  historicalRateCache.set(cacheKey, result);
+  return result;
+}
+
+function fiatToSats(amount: number, satsPerUnit: number): number {
+  return Math.round(amount * satsPerUnit);
 }
 
 export function computeLookupHash(fragment: string): string {
@@ -267,6 +577,14 @@ export async function resolveStoreContext(storeUrl: string): Promise<StoreLiveCo
     sellerPubkeyHex: base64urlToHex(resolved.siteData.pubkey),
     storeTags: resolved.siteData.tags,
   };
+}
+
+async function resolveStoreData(storeUrl: string): Promise<StoreData> {
+  const resolved = await resolveSiteInput(storeUrl);
+  if (!resolved.siteData || resolved.siteData.siteType !== 'store') {
+    throw new Error('Expected a Nowhere store URL or fragment.');
+  }
+  return resolved.siteData as StoreData;
 }
 
 export function createSimplePoolRelayClient(pool = new SimplePool()): StoreRelayClient {
@@ -442,6 +760,216 @@ export async function fetchOrdersForSeller(
     relays,
     orders,
     failedEventIds,
+  };
+}
+
+export async function fetchOrdersByIds(
+  input: FetchOrdersByIdsInput,
+  relayClient: StoreRelayClient = defaultStoreRelayClient,
+): Promise<FetchedOrders> {
+  const context = await resolveStoreContext(input.storeUrl);
+  const relays = resolveRelayList(input.relayList, getOrderRelays(context.storeTags));
+  const normalizedIds = [...new Set(input.orderIds.map((orderId) => orderId.trim().toLowerCase()).filter(Boolean))];
+  if (normalizedIds.length === 0) {
+    return {
+      context,
+      relays,
+      orders: [],
+      failedEventIds: [],
+    };
+  }
+
+  const orders: DecryptedOrder[] = [];
+  const failedEventIds: string[] = [];
+  const seenOrderIds = new Set<string>();
+  const batchSize = 50;
+
+  for (let index = 0; index < normalizedIds.length; index += batchSize) {
+    const batch = normalizedIds.slice(index, index + batchSize);
+    const events = sortEventsDescending(await relayClient.fetchEvents(
+      {
+        kinds: [NOWHERE_APPLICATION_KIND],
+        '#d': batch.map((orderId) => `${NOWHERE_DTAG_PREFIX}/${orderId}`),
+      },
+      relays,
+    ));
+
+    for (const event of events) {
+      try {
+        const order = decryptOrderEvent(event, input.sellerSecret);
+        const normalizedOrderId = order.orderId.toLowerCase();
+        if (
+          order.storeId !== context.lookupHash
+          || !batch.includes(normalizedOrderId)
+          || seenOrderIds.has(normalizedOrderId)
+        ) {
+          continue;
+        }
+
+        seenOrderIds.add(normalizedOrderId);
+        orders.push({ event, order });
+      } catch {
+        failedEventIds.push(event.id);
+      }
+    }
+  }
+
+  return {
+    context,
+    relays,
+    orders,
+    failedEventIds,
+  };
+}
+
+function parseOrderPayload(
+  payload: unknown,
+  sellerSecret?: string | Uint8Array,
+): { order: OrderMessage; source: StoreVerificationSource } {
+  if (isRecord(payload) && payload.v === 1 && typeof payload.p === 'string' && typeof payload.c === 'string') {
+    if (!sellerSecret) {
+      throw new Error('Seller secret is required to verify a receipt payload.');
+    }
+
+    return {
+      order: decryptOrderReceipt({
+        v: 1,
+        p: payload.p,
+        c: payload.c,
+      }, sellerSecret).order,
+      source: 'receipt',
+    };
+  }
+
+  if (isEvent(payload)) {
+    if (!sellerSecret) {
+      throw new Error('Seller secret is required to verify an encrypted order event.');
+    }
+
+    return {
+      order: decryptOrderEvent(payload, sellerSecret),
+      source: 'event',
+    };
+  }
+
+  if (isOrderMessage(payload)) {
+    return {
+      order: payload,
+      source: 'order',
+    };
+  }
+
+  throw new Error('Expected a receipt, encrypted order event, or plaintext order JSON.');
+}
+
+export async function verifyStoreOrder(
+  input: VerifyStoreOrderOptions,
+): Promise<VerifiedStoreOrder> {
+  const storeData = await resolveStoreData(input.storeUrl);
+  const storeCurrency = getStoreCurrency(storeData.tags);
+  const cartItems: VerificationCartItem[] = input.order.items
+    .filter((orderItem) => storeData.items[orderItem.i])
+    .map((orderItem) => ({
+      item: storeData.items[orderItem.i] as Item,
+      qty: orderItem.qty,
+      selectedVariant: orderItem.v,
+    }));
+
+  const rawSubtotal = cartItems.reduce((sum, cartItem) => sum + cartItem.item.price * cartItem.qty, 0);
+  const discount = computeDiscount(cartItems, storeData.tags).amount;
+  const expectedSubtotal = round2(rawSubtotal - discount);
+  const expectedShipping = computeShipping(cartItems, storeData.tags, input.order.buyer?.country);
+  const expectedTotal = round2(expectedSubtotal + expectedShipping);
+
+  const subtotalMatch = Math.abs(normalizeAmountForComparison(input.order.subtotal, expectedSubtotal) - expectedSubtotal) < 0.02;
+  const shippingMatch = Math.abs(normalizeAmountForComparison(input.order.shipping, expectedShipping) - expectedShipping) < 0.02;
+  const totalMatch = Math.abs(normalizeAmountForComparison(input.order.total, expectedTotal) - expectedTotal) < 0.02;
+  let ok = subtotalMatch && shippingMatch && totalMatch;
+
+  let historicalSatsPerUnit: number | null = null;
+  let rateSource = '';
+  let expectedSats: number | null = null;
+  let expectedPaymentAmount: number | null = null;
+  let paymentCurrencyLabel: string | null = null;
+  let paymentAmountMatch: boolean | null = null;
+  let paymentRateSource: string | null = null;
+
+  const payCurrency = input.order.paymentCurrency?.toUpperCase();
+  const isSatsPayment = !payCurrency || payCurrency === 'BTC' || payCurrency === 'SATS' || payCurrency === 'SAT';
+
+  if (isSatsPayment) {
+    try {
+      const rate = input.storeRateOverride ?? await getHistoricalRate(storeCurrency, input.order.timestamp);
+      historicalSatsPerUnit = rate.satsPerUnit;
+      rateSource = rate.source;
+      expectedSats = fiatToSats(expectedTotal, rate.satsPerUnit);
+
+      if (input.receivedSats !== undefined && expectedSats > 0) {
+        const diff = Math.abs(input.receivedSats - expectedSats) / expectedSats;
+        if (diff > 0.02) {
+          ok = false;
+        }
+      }
+    } catch {
+      rateSource = 'unavailable';
+    }
+  } else {
+    paymentCurrencyLabel = input.order.paymentCurrency ?? null;
+    try {
+      const [storeRate, paymentRate] = await Promise.all([
+        input.storeRateOverride ?? getHistoricalRate(storeCurrency, input.order.timestamp),
+        input.paymentRateOverride ?? getHistoricalRate(input.order.paymentCurrency ?? '', input.order.timestamp),
+      ]);
+      expectedPaymentAmount = round2(expectedTotal * storeRate.satsPerUnit / paymentRate.satsPerUnit);
+      paymentAmountMatch = input.order.paymentAmount !== undefined && expectedPaymentAmount > 0
+        ? Math.abs(normalizeAmountForComparison(input.order.paymentAmount, expectedPaymentAmount) - expectedPaymentAmount) / expectedPaymentAmount <= 0.01
+        : null;
+      if (paymentAmountMatch === false) {
+        ok = false;
+      }
+      paymentRateSource = [storeRate.source, paymentRate.source]
+        .filter((source, idx, sources) => source !== 'native' && sources.indexOf(source) === idx)
+        .join('+') || 'native';
+    } catch {
+      paymentRateSource = 'unavailable';
+    }
+  }
+
+  return {
+    ok,
+    order: input.order,
+    verification: {
+      error: null,
+      expectedSubtotal,
+      expectedShipping,
+      expectedTotal,
+      historicalSatsPerUnit,
+      rateSource,
+      expectedSats,
+      expectedPaymentAmount,
+      paymentCurrencyLabel,
+      paymentAmountMatch,
+      paymentRateSource,
+      subtotalMatch,
+      shippingMatch,
+      totalMatch,
+    },
+  };
+}
+
+export async function verifyStoreOrderPayload(
+  input: VerifyStoreOrderPayloadOptions,
+): Promise<VerifiedStoreOrderPayload> {
+  const { order, source } = parseOrderPayload(input.payload, input.sellerSecret);
+  return {
+    source,
+    ...(await verifyStoreOrder({
+      storeUrl: input.storeUrl,
+      order,
+      receivedSats: input.receivedSats,
+      storeRateOverride: input.storeRateOverride,
+      paymentRateOverride: input.paymentRateOverride,
+    })),
   };
 }
 

@@ -40,7 +40,9 @@ describe('relay-backed CLI commands', () => {
           tags: [
             { key: '1', value: relay.url },
             { key: '2', value: relay.url },
+            { key: '$', value: 'USD' },
             { key: 'k', value: null },
+            { key: 's', value: '300' },
           ],
         },
         async (storePath) => {
@@ -85,7 +87,52 @@ describe('relay-backed CLI commands', () => {
 
                 expect(receipt.order.orderId).toBe(published.order.orderId);
                 expect(receipt.order.buyer.name).toBe('Alex');
+
+                const verified = await cli(
+                  'store',
+                  'verify',
+                  store.fragment,
+                  '--input',
+                  receiptPath,
+                  '--secret',
+                  seller.nsec,
+                  '--received-sats',
+                  '27000',
+                  '--store-sats-per-unit',
+                  '1000',
+                  '--json',
+                );
+
+                expect(verified.ok).toBe(true);
+                expect(verified.verification.expectedShipping).toBe(3);
+                expect(verified.verification.expectedTotal).toBe(27);
+                expect(verified.verification.expectedSats).toBe(27000);
               });
+
+              await withJsonFile(
+                {
+                  buyer: { name: 'Blake', email: 'blake@example.com' },
+                  items: [{ i: 0, qty: 1 }],
+                  subtotal: 12,
+                  shipping: 3,
+                  total: 15,
+                  paymentMethod: 'btc',
+                  paymentCurrency: 'BTC',
+                  paymentAmount: 0.00015,
+                },
+                async (secondOrderPath) => {
+                  await cli(
+                    'store',
+                    'order',
+                    store.fragment,
+                    '--input',
+                    secondOrderPath,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
 
               const fetchedOrders = await cli(
                 'store',
@@ -98,8 +145,24 @@ describe('relay-backed CLI commands', () => {
                 '--json',
               );
 
-              expect(fetchedOrders.orders).toHaveLength(1);
-              expect(fetchedOrders.orders[0]?.order.total).toBe(27);
+              expect(fetchedOrders.orders).toHaveLength(2);
+              expect(fetchedOrders.orders.some((entry: { order: { total: number } }) => entry.order.total === 2700)).toBe(true);
+
+              const fetchedById = await cli(
+                'store',
+                'orders',
+                store.fragment,
+                '--secret',
+                seller.secretHex,
+                '--order-id',
+                published.order.orderId,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(fetchedById.orders).toHaveLength(1);
+              expect(fetchedById.orders[0]?.order.orderId).toBe(published.order.orderId);
             },
           );
 
