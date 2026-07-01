@@ -27,6 +27,14 @@ async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
   return JSON.parse(result.stdout);
 }
 
+async function cliTextWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+  });
+  return result.stdout.trim();
+}
+
 async function cliText(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
   return result.stdout.trim();
@@ -57,6 +65,17 @@ async function withBinaryFile(name: string, bytes: Uint8Array, fn: (path: string
   const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
   const file = join(dir, name);
   await writeFile(file, bytes);
+  try {
+    await fn(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withTextFile(name: string, text: string, fn: (path: string) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
+  const file = join(dir, name);
+  await writeFile(file, text, 'utf8');
   try {
     await fn(file);
   } finally {
@@ -469,6 +488,196 @@ describe('relay-backed CLI commands', () => {
         },
       );
     } finally {
+      await relay.close();
+    }
+  });
+
+  test('store manage commands persist local bookkeeping for confirmations, hiding, notes, and reconciliation', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const seller = generateSecretMaterial();
+
+    try {
+      await withTempDir('nowhere-cli-manage-', async (configHome) => {
+        const env = { XDG_CONFIG_HOME: configHome };
+
+        await withJsonFile(
+          {
+            pubkey: seller.npub,
+            name: 'Managed Store',
+            items: [{ name: 'Notebook', price: 12 }],
+            tags: [
+              { key: '1', value: relay.url },
+              { key: '2', value: relay.url },
+              { key: '$', value: 'USD' },
+            ],
+          },
+          async (storePath) => {
+            const store = await cli('create', 'store', '--input', storePath, '--json');
+
+            const publishOrder = async (buyerName: string) => {
+              let published: any;
+              await withJsonFile(
+                {
+                  buyer: { name: buyerName },
+                  items: [{ i: 0, qty: 1 }],
+                  subtotal: 12,
+                  shipping: 0,
+                  total: 12,
+                },
+                async (orderPath) => {
+                  published = await cli(
+                    'store',
+                    'order',
+                    store.fragment,
+                    '--input',
+                    orderPath,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
+              return published;
+            };
+
+            const first = await publishOrder('Alice');
+            const second = await publishOrder('Bob');
+
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'confirm',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'note',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--note',
+              'Paid via bank wire.',
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'hide',
+              store.fragment,
+              '--order-id',
+              second.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'status',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--status',
+              'fulfilled',
+              '--json',
+            );
+
+            await withTextFile(
+              'reconcile.txt',
+              `${first.order.orderId}\ndeadbeefdeadbee\n`,
+              async (reconcilePath) => {
+                const reconciled = await cliWithEnv(
+                  env,
+                  'store',
+                  'manage',
+                  'reconcile',
+                  store.fragment,
+                  '--input',
+                  reconcilePath,
+                  '--secret',
+                  seller.secretHex,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(reconciled.matched).toContain(first.order.orderId);
+                expect(reconciled.missing).toContain('deadbeefdeadbee');
+              },
+            );
+
+            const state = await cliWithEnv(env, 'store', 'manage', 'state', store.fragment, '--json');
+            expect(state.state.confirmedOrderIds).toContain(first.order.orderId);
+            expect(state.state.hiddenOrderIds).toContain(second.order.orderId);
+            expect(state.state.orderStatuses[first.order.orderId]).toBe('fulfilled');
+            expect(state.state.orderNotes[first.order.orderId]).toBe('Paid via bank wire.');
+
+            const orders = await cliWithEnv(
+              env,
+              'store',
+              'orders',
+              store.fragment,
+              '--secret',
+              seller.secretHex,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+            const managedFirst = orders.orders.find((entry: { order: { orderId: string } }) => entry.order.orderId === first.order.orderId);
+            const managedSecond = orders.orders.find((entry: { order: { orderId: string } }) => entry.order.orderId === second.order.orderId);
+            expect(managedFirst?.manage.confirmed).toBe(true);
+            expect(managedFirst?.manage.status).toBe('fulfilled');
+            expect(managedFirst?.manage.note).toBe('Paid via bank wire.');
+            expect(managedSecond?.manage.hidden).toBe(true);
+
+            const csv = await cliTextWithEnv(
+              env,
+              'store',
+              'orders',
+              store.fragment,
+              '--secret',
+              seller.secretHex,
+              '--relay',
+              relay.url,
+              '--csv',
+            );
+            expect(csv).toContain('Status,Confirmed');
+            expect(csv).toContain(`Managed Store,fulfilled,Yes,Alice`);
+
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'unhide',
+              store.fragment,
+              '--order-id',
+              second.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'unconfirm',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--json',
+            );
+
+            const updatedState = await cliWithEnv(env, 'store', 'manage', 'state', store.fragment, '--json');
+            expect(updatedState.state.confirmedOrderIds).not.toContain(first.order.orderId);
+            expect(updatedState.state.hiddenOrderIds).not.toContain(second.order.orderId);
+          },
+        );
+      });
+    } finally {
+      destroyPool();
       await relay.close();
     }
   });
