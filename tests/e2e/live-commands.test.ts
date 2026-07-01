@@ -15,6 +15,16 @@ async function cli(...args: string[]) {
   return JSON.parse(result.stdout);
 }
 
+async function cliFailure(...args: string[]) {
+  try {
+    await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+    throw new Error('Expected the CLI command to fail.');
+  } catch (error) {
+    const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
+    return stderr;
+  }
+}
+
 async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
   const file = join(dir, 'input.json');
@@ -225,6 +235,7 @@ describe('relay-backed CLI commands', () => {
             { key: 'N', value: null },
             { key: 'E', value: null },
             { key: 'R', value: null },
+            { key: 'c', value: 'BR.US' },
             { key: '1', value: relay.url },
           ],
         },
@@ -233,9 +244,35 @@ describe('relay-backed CLI commands', () => {
 
           await withJsonFile(
             {
+              email: 'casey@example.com',
+              country: 'CA',
+            },
+            async (invalidSignaturePath) => {
+              const stderr = await cliFailure(
+                'petition',
+                'sign',
+                petition.fragment,
+                '--input',
+                invalidSignaturePath,
+                '--secret',
+                signer.nsec,
+                '--relay',
+                relay.url,
+                '--pow-difficulty',
+                '8',
+                '--json',
+              );
+
+              expect(stderr).toMatch(/name is required/i);
+            },
+          );
+
+          await withJsonFile(
+            {
               ts: Date.now(),
               name: 'Casey',
               email: 'casey@example.com',
+              country: 'US',
               comment: 'Solidarity.',
             },
             async (signaturePath) => {
