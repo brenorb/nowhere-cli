@@ -8,6 +8,8 @@ Current scope in this first slice:
 - inspect Nowhere fragments and URLs
 - sign fragments with an existing Nostr key
 - encrypt and decrypt fragments with a password
+- create all eight Nowhere site types from structured JSON
+- import, patch, and republish existing sites
 
 Commands currently optimized for agent use expose `--json` output.
 
@@ -28,4 +30,14 @@ pnpm cli inspect 'https://hostednowhere.com/s#...'
 pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
+pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
+pnpm cli update 'https://hostednowhere.com/s#...' --patch ./patch.json --json
 ```
+
+## Builder Input
+
+`create <tool>` accepts the upstream codec shape directly as JSON.
+
+- Use `pubkey` as a Nowhere base64url pubkey, an `npub`, or a 64-char hex pubkey.
+- Use tag objects like `{ "key": "V", "value": null }` for boolean tags that the web app stores without a value.
+- `update` imports an existing site, merges the patch object, then re-encodes it through the upstream codec.

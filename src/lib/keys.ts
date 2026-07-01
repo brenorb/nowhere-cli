@@ -49,3 +49,28 @@ export function describeSecretBytes(secretKey: Uint8Array): SecretMaterial {
 export function generateSecretMaterial(): SecretMaterial {
   return describeSecretBytes(generateSecretKey());
 }
+
+export function normalizeNowherePubkey(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (trimmed.startsWith('npub1')) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== 'npub') {
+      throw new Error('Expected an npub public key.');
+    }
+    return bytesToBase64url(hexToBytes(decoded.data as string));
+  }
+
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return bytesToBase64url(hexToBytes(trimmed.toLowerCase()));
+  }
+
+  return trimmed;
+}

@@ -1,6 +1,7 @@
 import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes } from '@nowhere/codec';
 import { Command } from 'commander';
 import { finalizeEvent } from 'nostr-tools/pure';
+import { buildSite, deepMerge, type ToolSlug } from './lib/builders.js';
 import { DEFAULT_RENDERER_ORIGIN } from './lib/constants.js';
 import {
   computeVerificationSummary,
@@ -8,12 +9,24 @@ import {
   normalizeToFragment,
   resolveSiteInput,
 } from './lib/fragments.js';
+import { readJsonInput } from './lib/io.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
 import { printOutput } from './lib/output.js';
 
 function fail(message: string): never {
   throw new Error(message);
 }
+
+const toolChoices: ToolSlug[] = [
+  'store',
+  'event',
+  'fundraiser',
+  'petition',
+  'message',
+  'drop',
+  'art',
+  'forum',
+];
 
 async function signFragmentWithSecret(input: string, secret: string) {
   const resolved = await resolveSiteInput(input);
@@ -56,6 +69,57 @@ async function signFragmentWithSecret(input: string, secret: string) {
     signerPubkeyHex: material.pubkeyHex,
     signerNpub: material.npub,
     signerNowherePubkey: material.nowherePubkey,
+  };
+}
+
+async function finalizePublish(
+  fragment: string,
+  signSecret?: string,
+  encryptPassword?: string,
+): Promise<{
+  fragment: string;
+  url: string;
+  unsignedFragment: string;
+  unsignedUrl: string;
+  signed: boolean;
+  encrypted: boolean;
+  signedFragment: string | null;
+  signedUrl: string | null;
+  encryptedFragment: string | null;
+  encryptedUrl: string | null;
+}> {
+  const unsignedFragment = fragment;
+  const unsignedUrl = fragmentToUrl(unsignedFragment);
+  let activeFragment = unsignedFragment;
+  let signedFragment: string | null = null;
+  let signedUrl: string | null = null;
+  let encryptedFragment: string | null = null;
+  let encryptedUrl: string | null = null;
+
+  if (signSecret) {
+    const signed = await signFragmentWithSecret(unsignedFragment, signSecret);
+    signedFragment = signed.signedFragment;
+    signedUrl = signed.signedUrl;
+    activeFragment = signed.signedFragment;
+  }
+
+  if (encryptPassword) {
+    encryptedFragment = await encryptFragment(activeFragment, encryptPassword);
+    encryptedUrl = fragmentToUrl(encryptedFragment);
+    activeFragment = encryptedFragment;
+  }
+
+  return {
+    fragment: activeFragment,
+    url: fragmentToUrl(activeFragment),
+    unsignedFragment,
+    unsignedUrl,
+    signed: Boolean(signSecret),
+    encrypted: Boolean(encryptPassword),
+    signedFragment,
+    signedUrl,
+    encryptedFragment,
+    encryptedUrl,
   };
 }
 
@@ -169,6 +233,80 @@ program
         unsignedFragment: resolved.unsignedFragment,
         unsignedUrl: resolved.unsignedFragment ? fragmentToUrl(resolved.unsignedFragment) : null,
         verification,
+      },
+      Boolean(options.json),
+    );
+  });
+
+program
+  .command('create')
+  .description('Create one of the eight Nowhere site types from structured JSON input.')
+  .argument('<tool>', `One of: ${toolChoices.join(', ')}`)
+  .requiredOption('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
+  .option('--sign-secret <secret>', 'Sign the generated site with this nsec or hex secret.')
+  .option('--encrypt-password <password>', 'Encrypt the final fragment after signing, matching the web flow.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (tool: string, options) => {
+    if (!toolChoices.includes(tool as ToolSlug)) {
+      fail(`Unsupported tool "${tool}". Expected one of: ${toolChoices.join(', ')}.`);
+    }
+
+    const raw = await readJsonInput(options.input);
+    const built = await buildSite(tool as ToolSlug, raw);
+    const published = await finalizePublish(
+      built.fragment,
+      options.signSecret,
+      options.encryptPassword,
+    );
+
+    printOutput(
+      {
+        tool,
+        siteType: tool === 'forum' ? 'discussion' : tool,
+        inputPath: options.input,
+        siteData: built.siteData,
+        verification: built.verification,
+        ...published,
+      },
+      Boolean(options.json),
+    );
+  });
+
+program
+  .command('update')
+  .description('Import an existing Nowhere site, merge a JSON patch, and republish it.')
+  .argument('<input>', 'Fragment or full Nowhere URL to import.')
+  .requiredOption('--patch <path>', 'Path to JSON patch, or "-" to read JSON from stdin.')
+  .option('--password <password>', 'Decrypt the existing site before applying the patch.')
+  .option('--sign-secret <secret>', 'Sign the updated site with this nsec or hex secret.')
+  .option('--encrypt-password <password>', 'Encrypt the updated fragment after signing.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (input, options) => {
+    const resolved = await resolveSiteInput(input, options.password);
+    if (!resolved.siteData) {
+      fail(resolved.decodeError ?? 'Could not decode the input site.');
+    }
+
+    const patch = await readJsonInput(options.patch);
+    const tool = resolved.siteData.siteType === 'discussion'
+      ? 'forum'
+      : (resolved.siteData.siteType as ToolSlug);
+    const merged = deepMerge(resolved.siteData, patch);
+    const built = await buildSite(tool, merged);
+    const published = await finalizePublish(
+      built.fragment,
+      options.signSecret,
+      options.encryptPassword,
+    );
+
+    printOutput(
+      {
+        tool,
+        sourceInput: input,
+        patchPath: options.patch,
+        siteData: built.siteData,
+        verification: built.verification,
+        ...published,
       },
       Boolean(options.json),
     );
