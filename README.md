@@ -11,7 +11,7 @@ Current scope in this first slice:
 - create all eight Nowhere site types from structured JSON
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
-- relay-backed CLI commands for store management, petition signing/owner review, and forum posting
+- relay-backed CLI commands for store management, petition signing/owner review, and full forum activity management
 
 Commands currently optimized for agent use expose `--json` output.
 
@@ -53,7 +53,7 @@ The CLI now includes upstream-compatible runtime modules for the parts of Nowher
 
 - `src/lib/store-live.ts` publishes encrypted store orders, fetches seller-visible orders, publishes inventory/status updates, and reads the current status state.
 - `src/lib/petition-live.ts` publishes petition signatures with the same `kind`, `d` tag, PoW, and owner-only decryption flow as the website.
-- `src/lib/forum-live.ts` publishes and reads forum posts, replies, torrent entries, and general chat messages.
+- `src/lib/forum-live.ts` publishes and reads forum posts, replies, torrent entries, torrent reply threads, salted forum namespaces, room announcements, room chat, and general chat messages.
 
 Those modules are covered with e2e tests against the local mock relay in `tests/support/mockRelay.ts`, and the command layer in `src/cli.ts` now wraps them for agent-facing automation.
 
@@ -63,6 +63,6 @@ The CLI now exposes the main relay-backed workflows directly:
 
 - `store order`, `store receipt decrypt`, `store orders`, `store status publish`, `store status fetch`
 - `petition sign`, `petition count`, `petition signatures`
-- `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrents`, `forum chat send`, `forum chat list`
+- `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrent reply`, `forum torrent replies`, `forum torrents`, `forum room announce`, `forum room announcements`, `forum room send`, `forum room list`, `forum chat send`, `forum chat list`
 
-Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it.
+Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it. Forum commands also accept `--salt <value>` anywhere the website derives an alternate salted forum keyspace.

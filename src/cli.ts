@@ -23,12 +23,18 @@ import {
 import {
   listForumPosts,
   listForumReplies,
+  listForumTorrentReplies,
   listForumTorrents,
   listGeneralChatMessages,
+  listRoomAnnouncements,
+  listRoomChatMessages,
   publishForumPostFromInput,
   publishForumReplyFromInput,
+  publishForumTorrentReplyFromInput,
   publishForumTorrentFromInput,
   publishGeneralChatMessage,
+  publishRoomAnnouncement,
+  publishRoomChatMessage,
 } from './lib/forum-live.js';
 import {
   createSimplePoolRelayClient,
@@ -768,6 +774,7 @@ forum
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the post JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -780,6 +787,7 @@ forum
         body: readString(payload, 'body', false),
         link: readString(payload, 'link', false),
         secret: options.secret,
+        salt: options.salt,
         relays: getRelayList(options.relay),
       })),
       Boolean(options.json),
@@ -791,6 +799,7 @@ forum
   .description('List forum posts, optionally scoped to a topic.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--topic <topic>', 'Only list posts for this topic.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -799,6 +808,7 @@ forum
         posts: await withForumPoolCleanup(() => listForumPosts({
           forumInput,
           topic: options.topic,
+          salt: options.salt,
           relays: getRelayList(options.relay),
         })),
       },
@@ -813,6 +823,7 @@ forum
   .requiredOption('--post-event <id>', 'Target post event id.')
   .requiredOption('--input <path>', 'Path to the reply JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -824,6 +835,7 @@ forum
         body: readString(payload, 'body') as string,
         quotedReplyId: readString(payload, 'quotedReplyId', false),
         secret: options.secret,
+        salt: options.salt,
         relays: getRelayList(options.relay),
       })),
       Boolean(options.json),
@@ -835,6 +847,7 @@ forum
   .description('List replies for a forum post.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--post-event <id>', 'Target post event id.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -843,6 +856,7 @@ forum
         replies: await withForumPoolCleanup(() => listForumReplies({
           forumInput,
           postEventId: options.postEvent,
+          salt: options.salt,
           relays: getRelayList(options.relay),
         })),
       },
@@ -858,6 +872,7 @@ forumTorrent
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the torrent JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -866,6 +881,7 @@ forumTorrent
       await withForumPoolCleanup(() => publishForumTorrentFromInput({
         forumInput,
         secret: options.secret,
+        salt: options.salt,
         relays: getRelayList(options.relay),
         torrent: {
           x: readString(payload, 'x') as string,
@@ -897,10 +913,59 @@ forumTorrent
     );
   });
 
+forumTorrent
+  .command('reply')
+  .description('Publish a reply to an existing forum torrent entry.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--torrent-event <id>', 'Target torrent event id.')
+  .requiredOption('--input <path>', 'Path to the torrent reply JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const payload = await readObjectInput(options.input, 'Expected a JSON torrent reply payload.');
+    printOutput(
+      await withForumPoolCleanup(() => publishForumTorrentReplyFromInput({
+        forumInput,
+        torrentEventId: options.torrentEvent,
+        body: readString(payload, 'body') as string,
+        quotedReplyId: readString(payload, 'quotedReplyId', false),
+        secret: options.secret,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      })),
+      Boolean(options.json),
+    );
+  });
+
+forumTorrent
+  .command('replies')
+  .description('List replies for a forum torrent entry.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--torrent-event <id>', 'Target torrent event id.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    printOutput(
+      {
+        replies: await withForumPoolCleanup(() => listForumTorrentReplies({
+          forumInput,
+          torrentEventId: options.torrentEvent,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+      },
+      Boolean(options.json),
+    );
+  });
+
 forum
   .command('torrents')
   .description('List published forum torrent entries.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -908,6 +973,7 @@ forum
       {
         torrents: await withForumPoolCleanup(() => listForumTorrents({
           forumInput,
+          salt: options.salt,
           relays: getRelayList(options.relay),
         })),
       },
@@ -923,6 +989,7 @@ forumChat
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -932,6 +999,7 @@ forumChat
         forumInput,
         message: readString(payload, 'message') as string,
         secret: options.secret,
+        salt: options.salt,
         relays: getRelayList(options.relay),
       })),
       Boolean(options.json),
@@ -942,6 +1010,7 @@ forumChat
   .command('list')
   .description('List general forum chat messages.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
@@ -949,6 +1018,102 @@ forumChat
       {
         messages: await withForumPoolCleanup(() => listGeneralChatMessages({
           forumInput,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+      },
+      Boolean(options.json),
+    );
+  });
+
+const forumRoom = forum.command('room').description('Publish or inspect private forum room announcements and messages.');
+
+forumRoom
+  .command('announce')
+  .description('Publish a room announcement with the shared access code.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--input <path>', 'Path to the room announcement JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const payload = await readObjectInput(options.input, 'Expected a JSON room announcement payload.');
+    printOutput(
+      await withForumPoolCleanup(() => publishRoomAnnouncement({
+        forumInput,
+        roomName: readString(payload, 'roomName') as string,
+        accessCode: readString(payload, 'accessCode') as string,
+        secret: options.secret,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      })),
+      Boolean(options.json),
+    );
+  });
+
+forumRoom
+  .command('announcements')
+  .description('List room announcements visible to the forum key.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    printOutput(
+      {
+        announcements: await withForumPoolCleanup(() => listRoomAnnouncements({
+          forumInput,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+      },
+      Boolean(options.json),
+    );
+  });
+
+forumRoom
+  .command('send')
+  .description('Publish an encrypted forum room message.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--input <path>', 'Path to the room chat JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const payload = await readObjectInput(options.input, 'Expected a JSON room chat payload.');
+    printOutput(
+      await withForumPoolCleanup(() => publishRoomChatMessage({
+        forumInput,
+        roomName: readString(payload, 'roomName') as string,
+        accessCode: readString(payload, 'accessCode') as string,
+        message: readString(payload, 'message') as string,
+        secret: options.secret,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      })),
+      Boolean(options.json),
+    );
+  });
+
+forumRoom
+  .command('list')
+  .description('List encrypted forum room messages.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--room-name <name>', 'Room name.')
+  .requiredOption('--access-code <code>', 'Room access code.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    printOutput(
+      {
+        messages: await withForumPoolCleanup(() => listRoomChatMessages({
+          forumInput,
+          roomName: options.roomName,
+          accessCode: options.accessCode,
+          salt: options.salt,
           relays: getRelayList(options.relay),
         })),
       },
