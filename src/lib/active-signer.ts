@@ -12,6 +12,7 @@ import { getPool } from './relay.js';
 
 const ACTIVE_SIGNER_FILE = 'active-signer.json';
 const NOSTR_CONNECT_APP_NAME = 'Nowhere CLI';
+export const DEFAULT_NOSTRCONNECT_RELAYS = ['wss://bucket.coracle.social/'];
 const NOSTR_CONNECT_APP_PERMS = [
   'get_public_key',
   'sign_event:1',
@@ -56,6 +57,13 @@ interface PersistedNip46Signer {
 }
 
 type PersistedSigner = PersistedNip46Signer;
+
+export interface NostrConnectHandshake {
+  uri: string;
+  clientSecretHex: string;
+  secret: string;
+  relays: string[];
+}
 
 class LocalSecretSigner implements CliSigner {
   readonly type = 'local' as const;
@@ -250,7 +258,9 @@ export async function requireActiveSigner(): Promise<CliSigner> {
   return signer;
 }
 
-export async function connectSignerViaBunker(input: string): Promise<CliSigner> {
+export async function connectSignerViaBunker(input: string, options?: {
+  onAuthUrl?: (url: string) => void;
+}): Promise<CliSigner> {
   const trimmed = input.trim();
   if (!trimmed) {
     throw new Error('Enter a bunker URL or name@domain.');
@@ -274,6 +284,7 @@ export async function connectSignerViaBunker(input: string): Promise<CliSigner> 
     clientSecretHex,
     remotePubkey: bunkerPointer.pubkey,
     secret: bunkerPointer.secret ?? undefined,
+    onAuthUrl: options?.onAuthUrl,
   });
   client.open();
   await client.connect(NOSTR_CONNECT_APP_PERMS.join(','));
@@ -321,15 +332,90 @@ export async function getActiveSignerStatus(): Promise<{
   };
 }
 
-export function buildNostrConnectHandshake(relays: string[]): { uri: string; clientSecretHex: string } {
+function parseNostrConnectHandshakeUri(uri: string): { relays: string[]; secret: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw new Error('Could not parse nostrconnect URI.');
+  }
+
+  if (parsed.protocol !== 'nostrconnect:') {
+    throw new Error('Expected a nostrconnect:// URI.');
+  }
+
+  const secret = parsed.searchParams.get('secret')?.trim();
+  if (!secret) {
+    throw new Error('The nostrconnect URI is missing its secret parameter.');
+  }
+
+  const relays = normalizeRelays(parsed.searchParams.getAll('relay'));
+  if (relays.length === 0) {
+    throw new Error('The nostrconnect URI did not provide any relays.');
+  }
+
+  return { relays, secret };
+}
+
+export async function connectSignerViaHandshake(options: {
+  uri: string;
+  clientSecretHex: string;
+  timeoutMs?: number;
+  onAuthUrl?: (url: string) => void;
+}): Promise<CliSigner> {
+  const { relays, secret } = parseNostrConnectHandshakeUri(options.uri);
+  const client = new NostrConnectClient({
+    pool: getPool(),
+    relays,
+    clientSecretHex: options.clientSecretHex,
+    secret,
+    onAuthUrl: options.onAuthUrl,
+  });
+  client.open();
+
+  const abortController = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const timer = setTimeout(() => abortController.abort(), timeoutMs);
+
+  try {
+    const bunkerPubkey = await client.waitForSigner(abortController.signal);
+    const pubkeyHex = await client.getPublicKey();
+    const signer = new Nip46Signer(pubkeyHex, client, {
+      type: 'nip46',
+      pubkeyHex,
+      bunkerUri: stripSecretParam(options.uri),
+      bunkerPubkey,
+      clientSecretHex: options.clientSecretHex,
+      relays,
+    });
+    await signer.persist();
+    return signer;
+  } catch (error) {
+    client.close();
+    if ((error as Error)?.message === 'Aborted') {
+      throw new Error(`Timed out waiting for a signer after ${Math.round(timeoutMs / 1000)}s.`, {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function buildNostrConnectHandshake(relays: string[]): NostrConnectHandshake {
   const clientSecret = generateSecretKey();
   const clientSecretHex = bytesToHex(clientSecret);
+  const normalizedRelays = normalizeRelays(relays.length > 0 ? relays : DEFAULT_NOSTRCONNECT_RELAYS);
+  const secret = randomSecret();
   return {
     uri: buildNostrConnectUri({
       clientPubkey: getPublicKey(clientSecret),
-      relays: normalizeRelays(relays),
-      secret: randomSecret(),
+      relays: normalizedRelays,
+      secret,
     }),
     clientSecretHex,
+    secret,
+    relays: normalizedRelays,
   };
 }
