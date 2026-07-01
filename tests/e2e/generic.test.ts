@@ -2,8 +2,8 @@ import { encodeMessage, encryptFragment, type MessageData } from '@nowhere/codec
 import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { getPublicKey } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 

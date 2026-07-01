@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
-import { finalizeEvent } from 'nostr-tools/pure';
 import {
+  buildNostrConnectHandshake,
   connectSignerViaBunker,
+  connectSignerViaHandshake,
   disconnectActiveSigner,
   getActiveSignerStatus,
   requireActiveSigner,
@@ -37,6 +38,8 @@ import {
 import {
   buildTorrentDataFromParsedTorrent,
   checkForumTorrentSubmission,
+  type DecryptedForumPost,
+  type DecryptedForumTorrent,
   listForumPosts,
   listPrivateChatMessages,
   listForumReplies,
@@ -45,6 +48,7 @@ import {
   listGeneralChatMessages,
   listRoomAnnouncements,
   listRoomChatMessages,
+  listVoiceSignals,
   publishForumPostFromInput,
   publishPrivateChatMessage,
   publishForumReplyFromInput,
@@ -53,6 +57,8 @@ import {
   publishGeneralChatMessage,
   publishRoomAnnouncement,
   publishRoomChatMessage,
+  publishVoiceSignal,
+  type VoiceSignalType,
 } from './lib/forum-live.js';
 import {
   buildForumWotSet,
@@ -63,6 +69,18 @@ import {
 import { beginStoreCheckout, quoteStoreCheckout } from './lib/store-checkout.js';
 import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
+  confirmStoreOrders,
+  getStoreManageRecord,
+  getStoreOrderOverlay,
+  hideStoreOrders,
+  reconcileStoreOrders,
+  setStoreOrderNote,
+  setStoreOrderStatus,
+  unconfirmStoreOrders,
+  unhideStoreOrders,
+  type StoreOrderStatus,
+} from './lib/store-manage-state.js';
+import {
   createSimplePoolRelayClient,
   decryptOrderReceipt,
   decryptOrderReceiptWithAccess,
@@ -72,6 +90,7 @@ import {
   type OrderReceipt,
   publishOrderReceipt,
   publishStoreStatus,
+  resolveStoreContext,
   verifyStoreOrderPayload,
 } from './lib/store-live.js';
 
@@ -81,6 +100,103 @@ function fail(message: string): never {
 
 function printTextOutput(value: string): void {
   process.stdout.write(`${value}\n`);
+}
+
+const DEFAULT_WATCH_POLL_MS = 250;
+
+function addWatchOptions<T extends Command>(command: T): T {
+  return command
+    .option('--watch', 'Keep polling and emit newly discovered entries as they appear.')
+    .option('--watch-seconds <seconds>', 'Stop watch mode after this many seconds.');
+}
+
+function watchRequested(options: { watch?: boolean; watchSeconds?: string | undefined }): boolean {
+  return options.watch === true || typeof options.watchSeconds === 'string';
+}
+
+function readWatchDurationMs(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    fail('--watch-seconds must be a positive number.');
+  }
+  return Math.ceil(seconds * 1000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function printWatchRecord(scope: string, phase: 'snapshot' | 'live', entry: unknown, json: boolean): void {
+  const payload = { type: 'event', scope, phase, entry };
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload)}\n`);
+    return;
+  }
+
+  printOutput(payload, false);
+}
+
+async function watchEntries<T extends { eventId: string }>(options: {
+  enabled: boolean;
+  watchSeconds?: string;
+  json: boolean;
+  scope: string;
+  list: () => Promise<T[]>;
+}): Promise<boolean> {
+  if (!options.enabled) {
+    return false;
+  }
+
+  const durationMs = readWatchDurationMs(options.watchSeconds);
+  const startedAt = Date.now();
+  const seen = new Set<string>();
+  let phase: 'snapshot' | 'live' = 'snapshot';
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+  };
+
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  try {
+    while (!stopped) {
+      const entries = await options.list();
+      for (const entry of [...entries].reverse()) {
+        if (seen.has(entry.eventId)) {
+          continue;
+        }
+        seen.add(entry.eventId);
+        printWatchRecord(options.scope, phase, entry, options.json);
+      }
+
+      phase = 'live';
+      if (stopped) {
+        break;
+      }
+
+      if (durationMs !== undefined) {
+        const elapsedMs = Date.now() - startedAt;
+        if (elapsedMs >= durationMs) {
+          break;
+        }
+        await sleep(Math.min(DEFAULT_WATCH_POLL_MS, durationMs - elapsedMs));
+        continue;
+      }
+
+      await sleep(DEFAULT_WATCH_POLL_MS);
+    }
+
+    return true;
+  } finally {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+  }
 }
 
 const toolChoices: ToolSlug[] = [
@@ -407,6 +523,17 @@ async function readObjectInput(path: string, message: string): Promise<Record<st
   return requireObject(await readJsonInput(path), message);
 }
 
+async function readTextInput(path: string): Promise<string> {
+  if (path === '-') {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+  return readFile(path, 'utf8');
+}
+
 function readString(value: Record<string, unknown>, key: string, required = true): string | undefined {
   const candidate = value[key];
   if (candidate === undefined || candidate === null) {
@@ -457,6 +584,263 @@ function readBoolean(value: Record<string, unknown>, key: string, required = tru
   }
 
   return candidate;
+}
+
+const voiceSignalTypes: VoiceSignalType[] = ['join', 'leave', 'offer', 'answer', 'ice', 'mute'];
+const voiceChannelTypes = ['general', 'room', 'private'] as const;
+const storeOrderStatuses: StoreOrderStatus[] = ['new', 'confirmed', 'processing', 'fulfilled', 'refunded', 'no_payment'];
+const forumDateFilters = ['today', 'week', 'month', 'year'] as const;
+const forumPostTypes = ['text', 'link', 'image'] as const;
+const forumPostSortModes = ['newest', 'oldest', 'replies'] as const;
+const forumTorrentSortModes = ['date', 'size', 'category', 'title', 'author'] as const;
+const sortDirections = ['asc', 'desc'] as const;
+
+type ForumDateFilter = (typeof forumDateFilters)[number];
+type ForumPostType = (typeof forumPostTypes)[number];
+type ForumPostSortMode = (typeof forumPostSortModes)[number];
+type ForumTorrentSortMode = (typeof forumTorrentSortModes)[number];
+type SortDirection = (typeof sortDirections)[number];
+
+function readVoiceSignalType(value: Record<string, unknown>, key: string): VoiceSignalType {
+  const candidate = readString(value, key) as string;
+  if (!voiceSignalTypes.includes(candidate as VoiceSignalType)) {
+    fail(`Expected "${key}" to be one of: ${voiceSignalTypes.join(', ')}.`);
+  }
+  return candidate as VoiceSignalType;
+}
+
+function readVoiceChannel(value: Record<string, unknown>, key: string): 'general' | 'room' | 'private' {
+  const candidate = readString(value, key) as string;
+  if (!voiceChannelTypes.includes(candidate as (typeof voiceChannelTypes)[number])) {
+    fail(`Expected "${key}" to be one of: ${voiceChannelTypes.join(', ')}.`);
+  }
+  return candidate as 'general' | 'room' | 'private';
+}
+
+function readStoreOrderStatus(value: string): StoreOrderStatus {
+  if (!storeOrderStatuses.includes(value as StoreOrderStatus)) {
+    fail(`Expected --status to be one of: ${storeOrderStatuses.join(', ')}.`);
+  }
+  return value as StoreOrderStatus;
+}
+
+function readForumDateFilter(value: string | undefined): ForumDateFilter | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!forumDateFilters.includes(value as ForumDateFilter)) {
+    fail(`Expected --date to be one of: ${forumDateFilters.join(', ')}.`);
+  }
+  return value as ForumDateFilter;
+}
+
+function readForumPostType(value: string | undefined): ForumPostType | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!forumPostTypes.includes(value as ForumPostType)) {
+    fail(`Expected --type to be one of: ${forumPostTypes.join(', ')}.`);
+  }
+  return value as ForumPostType;
+}
+
+function readForumPostSortMode(value: string | undefined): ForumPostSortMode {
+  if (value === undefined) {
+    return 'newest';
+  }
+  if (!forumPostSortModes.includes(value as ForumPostSortMode)) {
+    fail(`Expected --sort to be one of: ${forumPostSortModes.join(', ')}.`);
+  }
+  return value as ForumPostSortMode;
+}
+
+function readForumTorrentSortMode(value: string | undefined): ForumTorrentSortMode {
+  if (value === undefined) {
+    return 'date';
+  }
+  if (!forumTorrentSortModes.includes(value as ForumTorrentSortMode)) {
+    fail(`Expected --sort to be one of: ${forumTorrentSortModes.join(', ')}.`);
+  }
+  return value as ForumTorrentSortMode;
+}
+
+function readSortDirection(value: string | undefined): SortDirection {
+  if (value === undefined) {
+    return 'desc';
+  }
+  if (!sortDirections.includes(value as SortDirection)) {
+    fail(`Expected --order to be one of: ${sortDirections.join(', ')}.`);
+  }
+  return value as SortDirection;
+}
+
+function readOptionalInteger(value: string | undefined, flagName: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
+    fail(`${flagName} must be an integer.`);
+  }
+  return parsed;
+}
+
+function passesForumDateFilter(timestamp: number, filter: ForumDateFilter | undefined): boolean {
+  if (!filter) {
+    return true;
+  }
+  const windowMs = {
+    today: 864e5,
+    week: 7 * 864e5,
+    month: 30 * 864e5,
+    year: 365 * 864e5,
+  }[filter];
+  return (Date.now() - (timestamp * 1000)) <= windowMs;
+}
+
+function detectForumPostType(post: DecryptedForumPost): ForumPostType {
+  if (post.payload.l) {
+    return /\.(jpg|jpeg|png|gif|webp|svg|avif)(\?|$)/i.test(post.payload.l) ? 'image' : 'link';
+  }
+  return 'text';
+}
+
+function filterForumPosts(entries: DecryptedForumPost[], options: {
+  search?: string;
+  date?: ForumDateFilter;
+  type?: ForumPostType;
+}): DecryptedForumPost[] {
+  const query = options.search?.trim().toLowerCase() ?? '';
+  return entries.filter((entry) => {
+    if (!passesForumDateFilter(entry.payload.ts, options.date)) {
+      return false;
+    }
+    if (options.type && detectForumPostType(entry) !== options.type) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    let npub: string;
+    try {
+      npub = nip19.npubEncode(entry.payload.p);
+    } catch {
+      npub = '';
+    }
+    return [
+      entry.payload.t,
+      entry.payload.b ?? '',
+      entry.payload.l ?? '',
+      entry.payload.p,
+      npub,
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+}
+
+async function sortForumPosts(entries: DecryptedForumPost[], options: {
+  sort: ForumPostSortMode;
+  forumInput: string;
+  relays?: string[];
+  salt?: string;
+}): Promise<DecryptedForumPost[]> {
+  if (options.sort === 'oldest') {
+    return [...entries].sort((left, right) => left.payload.ts - right.payload.ts);
+  }
+  if (options.sort === 'replies') {
+    const replyCounts = new Map<string, number>();
+    for (const entry of entries) {
+      const replies = await listForumReplies({
+        forumInput: options.forumInput,
+        postEventId: entry.eventId,
+        relays: options.relays,
+        salt: options.salt,
+      });
+      replyCounts.set(entry.eventId, replies.length);
+    }
+    return [...entries].sort((left, right) => {
+      const countDelta = (replyCounts.get(right.eventId) ?? 0) - (replyCounts.get(left.eventId) ?? 0);
+      if (countDelta !== 0) {
+        return countDelta;
+      }
+      return right.payload.ts - left.payload.ts;
+    });
+  }
+  return [...entries].sort((left, right) => right.payload.ts - left.payload.ts);
+}
+
+function torrentTotalBytes(entry: DecryptedForumTorrent): number {
+  return entry.torrentData.files.reduce((sum, file) => sum + file.size, 0);
+}
+
+function filterForumTorrents(entries: DecryptedForumTorrent[], options: {
+  search?: string;
+  date?: ForumDateFilter;
+  author?: string;
+  category?: string;
+  minBytes?: number;
+  maxBytes?: number;
+}): DecryptedForumTorrent[] {
+  const query = options.search?.trim().toLowerCase() ?? '';
+  const authorQuery = options.author?.trim().toLowerCase();
+  const categoryPrefix = options.category?.trim().toLowerCase();
+  return entries.filter((entry) => {
+    if (!passesForumDateFilter(entry.timestamp, options.date)) {
+      return false;
+    }
+    const totalBytes = torrentTotalBytes(entry);
+    if (options.minBytes !== undefined && totalBytes < options.minBytes) {
+      return false;
+    }
+    if (options.maxBytes !== undefined && totalBytes > options.maxBytes) {
+      return false;
+    }
+    if (authorQuery) {
+      let npub: string;
+      try {
+        npub = nip19.npubEncode(entry.authorPubkey).toLowerCase();
+      } catch {
+        npub = '';
+      }
+      const authorHex = entry.authorPubkey.toLowerCase();
+      if (authorHex !== authorQuery && npub !== authorQuery) {
+        return false;
+      }
+    }
+    if (categoryPrefix && !entry.torrentData.category.toLowerCase().startsWith(categoryPrefix)) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    return [
+      entry.torrentData.title,
+      entry.torrentData.description ?? '',
+      entry.torrentData.category,
+      entry.authorPubkey,
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+}
+
+function sortForumTorrents(entries: DecryptedForumTorrent[], options: {
+  sort: ForumTorrentSortMode;
+  order: SortDirection;
+}): DecryptedForumTorrent[] {
+  const direction = options.order === 'asc' ? 1 : -1;
+  return [...entries].sort((left, right) => {
+    let compare: number;
+    if (options.sort === 'size') {
+      compare = torrentTotalBytes(left) - torrentTotalBytes(right);
+    } else if (options.sort === 'category') {
+      compare = left.torrentData.category.localeCompare(right.torrentData.category);
+    } else if (options.sort === 'title') {
+      compare = left.torrentData.title.localeCompare(right.torrentData.title);
+    } else if (options.sort === 'author') {
+      compare = left.authorPubkey.localeCompare(right.authorPubkey);
+    } else {
+      compare = left.timestamp - right.timestamp;
+    }
+    return compare * direction;
+  });
 }
 
 function readArray(value: Record<string, unknown>, key: string, required = true): unknown[] | undefined {
@@ -705,7 +1089,12 @@ signerCommand
   .requiredOption('--bunker <input>', 'bunker:// URI or name@domain exposed by the signer.')
   .option('--json', 'Emit JSON output.')
   .action(async (options) => {
-    const signer = await connectSignerViaBunker(options.bunker);
+    let authUrl: string | null = null;
+    const signer = await connectSignerViaBunker(options.bunker, {
+      onAuthUrl: (url) => {
+        authUrl = url;
+      },
+    });
     try {
       printOutput(
         {
@@ -713,6 +1102,58 @@ signerCommand
           type: signer.type,
           pubkeyHex: signer.pubkeyHex,
           npub: nip19.npubEncode(signer.pubkeyHex),
+          authUrl,
+        },
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+signerCommand
+  .command('start')
+  .description('Generate a nostrconnect:// deeplink or QR payload for remote signer pairing.')
+  .option('--relay <url>', 'Relay override for the pairing session. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action((options) => {
+    const handshake = buildNostrConnectHandshake(getRelayList(options.relay) ?? []);
+    printOutput(
+      {
+        uri: handshake.uri,
+        deeplinkUri: handshake.uri,
+        clientSecretHex: handshake.clientSecretHex,
+        relays: handshake.relays,
+      },
+      Boolean(options.json),
+    );
+  });
+
+signerCommand
+  .command('wait')
+  .description('Wait for a signer to authorize a generated nostrconnect:// pairing session and persist it.')
+  .requiredOption('--uri <uri>', 'The nostrconnect:// URI returned by `nowhere signer start`.')
+  .requiredOption('--client-secret <hex>', 'The client secret returned by `nowhere signer start`.')
+  .option('--timeout-ms <ms>', 'How long to wait before giving up.', (value) => Number.parseInt(value, 10))
+  .option('--json', 'Emit JSON output.')
+  .action(async (options) => {
+    let authUrl: string | null = null;
+    const signer = await connectSignerViaHandshake({
+      uri: options.uri,
+      clientSecretHex: options.clientSecret,
+      timeoutMs: options.timeoutMs,
+      onAuthUrl: (url) => {
+        authUrl = url;
+      },
+    });
+    try {
+      printOutput(
+        {
+          connected: true,
+          type: signer.type,
+          pubkeyHex: signer.pubkeyHex,
+          npub: nip19.npubEncode(signer.pubkeyHex),
+          authUrl,
         },
         Boolean(options.json),
       );
@@ -1042,12 +1483,24 @@ store
               limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
             }, relayClient)
       ));
+      const state = await getStoreManageRecord(fetched.context.lookupHash);
+      const ordersWithState = fetched.orders.map((entry) => ({
+        ...entry,
+        manage: getStoreOrderOverlay(state, entry.order.orderId),
+      }));
 
       if (options.csv) {
-        printTextOutput(formatStoreOrdersCsv(fetched, store.siteData));
+        printTextOutput(formatStoreOrdersCsv({ ...fetched, orders: ordersWithState }, store.siteData));
         return;
       }
-      printOutput(fetched, Boolean(options.json));
+      printOutput(
+        {
+          ...fetched,
+          orders: ordersWithState,
+          manageState: state,
+        },
+        Boolean(options.json),
+      );
     } finally {
       await closeSignerQuietly(signer);
     }
@@ -1084,6 +1537,202 @@ store
             ? { satsPerUnit: Number.parseFloat(options.paymentSatsPerUnit), source: 'override' }
             : undefined,
         }),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+const storeManage = store.command('manage').description('Persist local seller bookkeeping for store orders.');
+
+storeManage
+  .command('state')
+  .description('Inspect the local bookkeeping state for a store.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await getStoreManageRecord(context.lookupHash),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('status')
+  .description('Set a local seller-side status for one or more order ids.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .requiredOption('--status <status>', `One of: ${storeOrderStatuses.join(', ')}.`)
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await setStoreOrderStatus(context.lookupHash, orderIds, readStoreOrderStatus(options.status)),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('confirm')
+  .description('Mark one or more orders as payment confirmed in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await confirmStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('unconfirm')
+  .description('Remove local payment confirmations for one or more orders.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await unconfirmStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('hide')
+  .description('Hide one or more orders in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await hideStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('unhide')
+  .description('Unhide one or more orders in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await unhideStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('note')
+  .description('Attach or replace a private local note for an order.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id.')
+  .requiredOption('--note <text>', 'The note text. Pass an empty string to clear it.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await setStoreOrderNote(context.lookupHash, options.orderId, options.note),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('reconcile')
+  .description('Scan pasted text for order ids, mark matches confirmed locally, and report misses.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--input <path>', 'Path to pasted text, or "-" for stdin.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const payload = await readTextInput(options.input);
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const fetched = await withStoreRelayClient((relayClient) => fetchOrdersForSeller({
+        storeUrl: store.url,
+        sellerSecret: options.secret,
+        sellerSigner: signer,
+        relayList: getRelayList(options.relay),
+      }, relayClient));
+      const result = await reconcileStoreOrders(
+        fetched.context.lookupHash,
+        payload,
+        fetched.orders.map((entry) => entry.order.orderId),
+      );
+      printOutput(
+        {
+          storeId: fetched.context.lookupHash,
+          matched: result.matched,
+          missing: result.missing,
+          state: result.record,
+        },
         Boolean(options.json),
       );
     } finally {
@@ -1446,37 +2095,68 @@ forum
     }
   });
 
-forum
+addWatchOptions(forum
   .command('posts')
   .description('List forum posts, optionally scoped to a topic.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--topic <topic>', 'Only list posts for this topic.')
+  .option('--search <text>', 'Filter posts by title, body, link, pubkey, or npub.')
+  .option('--date <range>', `Relative date window: ${forumDateFilters.join(', ')}.`)
+  .option('--type <kind>', `Filter post type: ${forumPostTypes.join(', ')}.`)
+  .option('--sort <mode>', `Sort order: ${forumPostSortModes.join(', ')}.`)
   .option('--moderated', 'Filter out entries blocked by forum WoT or banned-word rules.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
-    const posts = await withForumPoolCleanup(() => listForumPosts({
-      forumInput: forum.url,
-      topic: options.topic,
-      salt: options.salt,
-      relays: getRelayList(options.relay),
-    }));
+    const dateFilter = readForumDateFilter(options.date);
+    const postType = readForumPostType(options.type);
+    const sortMode = readForumPostSortMode(options.sort);
+    const listPosts = async () => withForumPoolCleanup(async () => {
+      const posts = await listForumPosts({
+        forumInput: forum.url,
+        topic: options.topic,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      });
+      const moderatedPosts = options.moderated
+        ? await filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'post',
+          entries: posts,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.payload.p,
+          getText: (entry) => [entry.payload.t, entry.payload.b, entry.payload.l].filter(Boolean).join('\n'),
+        })
+        : posts;
+      const filtered = filterForumPosts(moderatedPosts, {
+        search: options.search,
+        date: dateFilter,
+        type: postType,
+      });
+      return sortForumPosts(filtered, {
+        sort: sortMode,
+        forumInput: forum.url,
+        relays: getRelayList(options.relay),
+        salt: options.salt,
+      });
+    });
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.posts',
+      list: listPosts,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        posts: options.moderated
-          ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput: forum.url,
-            scope: 'post',
-            entries: posts,
-            profileRelays: getRelayList(options.profileRelay),
-            getAuthor: (entry) => entry.payload.p,
-            getText: (entry) => [entry.payload.t, entry.payload.b, entry.payload.l].filter(Boolean).join('\n'),
-          }))
-          : posts,
+        posts: await listPosts(),
       },
       Boolean(options.json),
     );
@@ -1517,7 +2197,7 @@ forum
     }
   });
 
-forum
+addWatchOptions(forum
   .command('replies')
   .description('List replies for a forum post.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
@@ -1527,27 +2207,40 @@ forum
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
-    const replies = await withForumPoolCleanup(() => listForumReplies({
-      forumInput: forum.url,
-      postEventId: options.postEvent,
-      salt: options.salt,
-      relays: getRelayList(options.relay),
-    }));
+    const listReplies = async () => {
+      const replies = await withForumPoolCleanup(() => listForumReplies({
+        forumInput: forum.url,
+        postEventId: options.postEvent,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      }));
+      return options.moderated
+        ? await withForumPoolCleanup(() => filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'reply',
+          entries: replies,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.payload.p,
+          getText: (entry) => entry.payload.b,
+        }))
+        : replies;
+    };
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.replies',
+      list: listReplies,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        replies: options.moderated
-          ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput: forum.url,
-            scope: 'reply',
-            entries: replies,
-            profileRelays: getRelayList(options.profileRelay),
-            getAuthor: (entry) => entry.payload.p,
-            getText: (entry) => entry.payload.b,
-          }))
-          : replies,
+        replies: await listReplies(),
       },
       Boolean(options.json),
     );
@@ -1672,59 +2365,122 @@ forumTorrent
     }
   });
 
-forumTorrent
+addWatchOptions(forumTorrent
   .command('replies')
   .description('List replies for a forum torrent entry.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--torrent-event <id>', 'Target torrent event id.')
+  .option('--moderated', 'Filter out torrent replies blocked by forum WoT or banned-word rules.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
+    const listTorrentReplies = async () => {
+      const replies = await withForumPoolCleanup(() => listForumTorrentReplies({
+        forumInput: forum.url,
+        torrentEventId: options.torrentEvent,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      }));
+      return options.moderated
+        ? await withForumPoolCleanup(() => filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'reply',
+          entries: replies,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.payload.p,
+          getText: (entry) => entry.payload.b,
+        }))
+        : replies;
+    };
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.torrentReplies',
+      list: listTorrentReplies,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        replies: await withForumPoolCleanup(() => listForumTorrentReplies({
-          forumInput: forum.url,
-          torrentEventId: options.torrentEvent,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        replies: await listTorrentReplies(),
       },
       Boolean(options.json),
     );
   });
 
-forum
+addWatchOptions(forum
   .command('torrents')
   .description('List published forum torrent entries.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--search <text>', 'Filter torrents by title, description, category, or author pubkey.')
+  .option('--date <range>', `Relative date window: ${forumDateFilters.join(', ')}.`)
+  .option('--author <pubkey>', 'Filter by torrent author pubkey or npub.')
+  .option('--category <path>', 'Filter by category prefix, such as "docs" or "docs > manuals".')
+  .option('--min-bytes <count>', 'Minimum total torrent size in bytes.')
+  .option('--max-bytes <count>', 'Maximum total torrent size in bytes.')
+  .option('--sort <field>', `Sort field: ${forumTorrentSortModes.join(', ')}.`)
+  .option('--order <dir>', `Sort direction: ${sortDirections.join(', ')}.`)
   .option('--moderated', 'Filter out torrents blocked by forum WoT or banned-word rules.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
-    const torrents = await withForumPoolCleanup(() => listForumTorrents({
-      forumInput: forum.url,
-      salt: options.salt,
-      relays: getRelayList(options.relay),
-    }));
+    const dateFilter = readForumDateFilter(options.date);
+    const sortMode = readForumTorrentSortMode(options.sort);
+    const sortOrder = readSortDirection(options.order);
+    const minBytes = readOptionalInteger(options.minBytes, '--min-bytes');
+    const maxBytes = readOptionalInteger(options.maxBytes, '--max-bytes');
+    const listTorrents = async () => withForumPoolCleanup(async () => {
+      const torrents = await listForumTorrents({
+        forumInput: forum.url,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      });
+      const moderatedTorrents = options.moderated
+        ? await filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'torrent',
+          entries: torrents,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.authorPubkey,
+          getText: (entry) => entry.torrentData.title,
+        })
+        : torrents;
+      const filtered = filterForumTorrents(moderatedTorrents, {
+        search: options.search,
+        date: dateFilter,
+        author: options.author,
+        category: options.category,
+        minBytes,
+        maxBytes,
+      });
+      return sortForumTorrents(filtered, {
+        sort: sortMode,
+        order: sortOrder,
+      });
+    });
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.torrents',
+      list: listTorrents,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        torrents: options.moderated
-          ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput: forum.url,
-            scope: 'torrent',
-            entries: torrents,
-            profileRelays: getRelayList(options.profileRelay),
-            getAuthor: (entry) => entry.authorPubkey,
-            getText: (entry) => entry.torrentData.title,
-          }))
-          : torrents,
+        torrents: await listTorrents(),
       },
       Boolean(options.json),
     );
@@ -1802,7 +2558,7 @@ forumPrivate
     }
   });
 
-forumPrivate
+addWatchOptions(forumPrivate
   .command('list')
   .description('List encrypted private forum messages for the active forum session.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
@@ -1811,24 +2567,123 @@ forumPrivate
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
+    const listMessages = () => withForumPoolCleanup(() => listPrivateChatMessages({
+      forumInput: forum.url,
+      sessionSecret: options.sessionSecret,
+      peerPubkey: options.peerPubkey,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.private',
+      list: listMessages,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        messages: await withForumPoolCleanup(() => listPrivateChatMessages({
-          forumInput: forum.url,
-          sessionSecret: options.sessionSecret,
-          peerPubkey: options.peerPubkey,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        messages: await listMessages(),
       },
       Boolean(options.json),
     );
   });
 
-forumChat
+const forumVoice = forum.command('voice').description('Publish or inspect forum voice signaling events.');
+
+forumVoice
+  .command('send')
+  .description('Publish a forum voice signaling event for the general, room, or private channel.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--input <path>', 'Path to the voice signal JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
+  .option('--session-secret <secret>', 'Optional stable session secret used as the voice session identity.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
+    const payload = await readObjectInput(options.input, 'Expected a JSON voice signal payload.');
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishVoiceSignal({
+          forumInput: forum.url,
+          type: readVoiceSignalType(payload, 'type'),
+          channel: readVoiceChannel(payload, 'channel'),
+          roomName: readString(payload, 'roomName', false),
+          accessCode: readString(payload, 'accessCode', false),
+          peerPubkey: readString(payload, 'peerPubkey', false),
+          recipientSessionPubkey: readString(payload, 'recipientSessionPubkey', false),
+          target: readString(payload, 'target', false),
+          sdp: readString(payload, 'sdp', false),
+          candidate: readString(payload, 'candidate', false),
+          muted: readBoolean(payload, 'muted', false),
+          secret: options.secret,
+          signer,
+          sessionSecret: options.sessionSecret,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+addWatchOptions(forumVoice
+  .command('list')
+  .description('List forum voice signaling events for a specific channel.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--channel <channel>', 'One of: general, room, private.')
+  .option('--room-name <name>', 'Room name when listing room voice signals.')
+  .option('--access-code <code>', 'Room access code when listing room voice signals.')
+  .option('--session-secret <secret>', 'Override the persisted forum session secret used for private voice decryption.')
+  .option('--peer-pubkey <pubkey>', 'Filter private voice signals by peer author pubkey.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.'))
+  .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
+    const listSignals = () => withForumPoolCleanup(() => listVoiceSignals({
+      forumInput: forum.url,
+      channel: readVoiceChannel({ channel: options.channel }, 'channel'),
+      roomName: options.roomName,
+      accessCode: options.accessCode,
+      sessionSecret: options.sessionSecret,
+      peerPubkey: options.peerPubkey,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.voice',
+      list: listSignals,
+    })) {
+      return;
+    }
+
+    printOutput(
+      {
+        signals: await listSignals(),
+      },
+      Boolean(options.json),
+    );
+  });
+
+addWatchOptions(forumChat
   .command('list')
   .description('List general forum chat messages.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
@@ -1837,26 +2692,39 @@ forumChat
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
-    const messages = await withForumPoolCleanup(() => listGeneralChatMessages({
-      forumInput: forum.url,
-      salt: options.salt,
-      relays: getRelayList(options.relay),
-    }));
+    const listMessages = async () => {
+      const messages = await withForumPoolCleanup(() => listGeneralChatMessages({
+        forumInput: forum.url,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      }));
+      return options.moderated
+        ? await withForumPoolCleanup(() => filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'chat',
+          entries: messages,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.payload.p,
+          getText: (entry) => entry.payload.b,
+        }))
+        : messages;
+    };
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.chat',
+      list: listMessages,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        messages: options.moderated
-          ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput: forum.url,
-            scope: 'chat',
-            entries: messages,
-            profileRelays: getRelayList(options.profileRelay),
-            getAuthor: (entry) => entry.payload.p,
-            getText: (entry) => entry.payload.b,
-          }))
-          : messages,
+        messages: await listMessages(),
       },
       Boolean(options.json),
     );
@@ -1897,23 +2765,34 @@ forumRoom
     }
   });
 
-forumRoom
+addWatchOptions(forumRoom
   .command('announcements')
   .description('List room announcements visible to the forum key.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
+    const listAnnouncements = () => withForumPoolCleanup(() => listRoomAnnouncements({
+      forumInput: forum.url,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.roomAnnouncements',
+      list: listAnnouncements,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        announcements: await withForumPoolCleanup(() => listRoomAnnouncements({
-          forumInput: forum.url,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        announcements: await listAnnouncements(),
       },
       Boolean(options.json),
     );
@@ -1953,7 +2832,7 @@ forumRoom
     }
   });
 
-forumRoom
+addWatchOptions(forumRoom
   .command('list')
   .description('List encrypted forum room messages.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
@@ -1964,28 +2843,41 @@ forumRoom
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
-  .option('--json', 'Emit JSON output.')
+  .option('--json', 'Emit JSON output.'))
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
-    const messages = await withForumPoolCleanup(() => listRoomChatMessages({
-      forumInput: forum.url,
-      roomName: options.roomName,
-      accessCode: options.accessCode,
-      salt: options.salt,
-      relays: getRelayList(options.relay),
-    }));
+    const listMessages = async () => {
+      const messages = await withForumPoolCleanup(() => listRoomChatMessages({
+        forumInput: forum.url,
+        roomName: options.roomName,
+        accessCode: options.accessCode,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      }));
+      return options.moderated
+        ? await withForumPoolCleanup(() => filterModeratedEntries({
+          forumInput: forum.url,
+          scope: 'chat',
+          entries: messages,
+          profileRelays: getRelayList(options.profileRelay),
+          getAuthor: (entry) => entry.payload.p,
+          getText: (entry) => entry.payload.b,
+        }))
+        : messages;
+    };
+    if (await watchEntries({
+      enabled: watchRequested(options),
+      watchSeconds: options.watchSeconds,
+      json: Boolean(options.json),
+      scope: 'forum.room',
+      list: listMessages,
+    })) {
+      return;
+    }
+
     printOutput(
       {
-        messages: options.moderated
-          ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput: forum.url,
-            scope: 'chat',
-            entries: messages,
-            profileRelays: getRelayList(options.profileRelay),
-            getAuthor: (entry) => entry.payload.p,
-            getText: (entry) => entry.payload.b,
-          }))
-          : messages,
+        messages: await listMessages(),
       },
       Boolean(options.json),
     );
