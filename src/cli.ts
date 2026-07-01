@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
-import { finalizeEvent } from 'nostr-tools/pure';
 import {
   connectSignerViaBunker,
   disconnectActiveSigner,

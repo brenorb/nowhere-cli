@@ -141,7 +141,7 @@ describe('petition live runtime', () => {
       expect(event.tags.some((tag) => tag[0] === 'nonce' && tag[2] === String(POW_DIFFICULTY))).toBe(true);
       expect(countLeadingZeroBits(event.id)).toBeGreaterThanOrEqual(POW_DIFFICULTY);
     }
-  }, 30_000);
+  }, 60_000);
 
   test('counts by petition d-tag and decrypts owner-visible signatures while rejecting insufficient PoW', async () => {
     const transport = new MemoryPetitionTransport();

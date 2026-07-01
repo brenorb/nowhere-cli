@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { bytesToBase64url, encodeMessage, type MessageData } from '@nowhere/codec';
+import { encodeMessage, type MessageData } from '@nowhere/codec';
 import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
