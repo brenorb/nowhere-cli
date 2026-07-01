@@ -1,6 +1,7 @@
 import type { Item, StoreData } from '@nowhere/codec';
 import type { FetchedOrders, OrderMessage } from './store-live.js';
 import type { FetchPetitionSignaturesResult, PetitionSignaturePayload } from './petition-live.js';
+import type { StoreOrderOverlay } from './store-manage-state.js';
 
 function csvCell(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -33,12 +34,15 @@ function itemsSummary(order: OrderMessage, items: Item[] | undefined): string {
 }
 
 export function formatStoreOrdersCsv(
-  fetched: FetchedOrders,
+  fetched: FetchedOrders & {
+    orders: Array<FetchedOrders['orders'][number] & { manage?: StoreOrderOverlay }>;
+  },
   storeData?: StoreData,
 ): string {
+  const orders = fetched.orders as Array<FetchedOrders['orders'][number] & { manage?: StoreOrderOverlay }>;
   const knownBuyerKeys = ['name', 'email', 'phone', 'street', 'city', 'state', 'postal', 'country', 'nostr', 'notes'];
   const extraKeys = new Set<string>();
-  for (const { order } of fetched.orders) {
+  for (const { order } of orders) {
     for (const key of Object.keys(order.buyer ?? {})) {
       if (!knownBuyerKeys.includes(key)) {
         extraKeys.add(key);
@@ -73,14 +77,14 @@ export function formatStoreOrdersCsv(
     ...extraKeyColumns,
   ];
 
-  const rows = fetched.orders.map(({ order }) => {
+  const rows = orders.map(({ order, manage }) => {
     const buyer = order.buyer ?? {};
     return [
       formatDate(order.timestamp),
       order.orderId,
       storeData?.name ?? fetched.context.lookupHash,
-      '',
-      '',
+      manage?.status ?? '',
+      manage?.confirmed ? 'Yes' : '',
       buyer.name ?? '',
       buyer.email ?? '',
       buyer.phone ?? '',
