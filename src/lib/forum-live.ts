@@ -9,8 +9,9 @@ import {
 } from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools/core';
-import { describeSecret, parseSecretKeyInput, type SecretMaterial } from './keys.js';
-import { fetchEvent, fetchEvents, getForumRelays, publishToRelays } from './relay.js';
+import { describeSecret, type SecretMaterial } from './keys.js';
+import { getForumSessionMaterial } from './forum-session.js';
+import { fetchEvent, fetchEvents, getForumRelays, publishToRelays, publishToRelaysBestEffort } from './relay.js';
 import { normalizeToFragment } from './fragments.js';
 import type { ParsedTorrentFile } from './torrent-bencode.js';
 
@@ -199,11 +200,6 @@ function deriveRoomKeypair(forumPrivkey: Uint8Array, roomName: string, accessCod
   return { privkey, pubkey: getPublicKey(privkey) };
 }
 
-function deriveSessionKeypair(secret: string) {
-  const privkey = parseSecretKeyInput(secret);
-  return { privkey, pubkey: getPublicKey(privkey) };
-}
-
 function wrapContentForSigning(content: string): string {
   const encrypted = nip44Encrypt(content, NOWHERE_CONV_KEY);
   return NOWHERE_PREFIX + encrypted;
@@ -283,16 +279,12 @@ function getTorrentSettings(data: ForumData): ForumTorrentSettings {
   };
 }
 
-function resolveAuthor(secret?: string): SecretMaterial | { pubkeyHex: string; secretKey: Uint8Array } {
+async function resolveAuthor(secret?: string): Promise<SecretMaterial> {
   if (secret) {
     return describeSecret(secret);
   }
 
-  const secretKey = generateSecretKey();
-  return {
-    secretKey,
-    pubkeyHex: getPublicKey(secretKey),
-  };
+  return getForumSessionMaterial();
 }
 
 function resolveForumFragment(input: string): { fragment: string; data: ForumData } {
@@ -374,7 +366,7 @@ export async function publishForumPostFromInput(options: {
   const context = createContext(options.forumInput, options.relays, options.salt);
   const topic = options.topic ?? '';
   const topicTag = deriveTopicTag(context.forumPrivkey, topic);
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(
     JSON.stringify({ t: options.title, b: options.body ?? null, l: options.link ?? null, ts: timestamp }),
@@ -500,7 +492,7 @@ export async function publishForumReplyFromInput(options: {
     throw new Error('Could not decrypt the target post.');
   }
 
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify({ b: options.body, ts: timestamp }));
   const inner = finalizeEvent(
@@ -594,7 +586,7 @@ export async function publishForumTorrentFromInput(options: {
     throw new Error(`Torrent already exists (${checked.duplicate.reason} match: ${checked.duplicate.title}).`);
   }
 
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const topicTag = deriveTopicTag(context.forumPrivkey, TORRENT_TOPIC_SEED);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify(checked.torrent));
@@ -766,7 +758,7 @@ export async function publishForumTorrentReplyFromInput(options: {
     throw new Error('Could not decrypt the target torrent.');
   }
 
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify({ b: options.body, ts: timestamp }));
   const inner = finalizeEvent(
@@ -850,7 +842,7 @@ export async function publishRoomAnnouncement(options: {
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning('room');
@@ -875,7 +867,7 @@ export async function publishRoomAnnouncement(options: {
     { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
-  await publishToRelays(event, context.relays);
+  await publishToRelaysBestEffort(event, context.relays);
   return { event, chatTag };
 }
 
@@ -909,7 +901,7 @@ export async function publishRoomChatMessage(options: {
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const { pubkey: roomPubkey } = deriveRoomKeypair(context.forumPrivkey, options.roomName, options.accessCode);
@@ -935,7 +927,7 @@ export async function publishRoomChatMessage(options: {
     { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
-  await publishToRelays(event, context.relays);
+  await publishToRelaysBestEffort(event, context.relays);
   return { event, chatTag, roomName: options.roomName };
 }
 
@@ -992,8 +984,8 @@ export async function publishGeneralChatMessage(options: {
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = resolveAuthor(options.secret);
-  const sessionPubkey = options.sessionSecret ? deriveSessionKeypair(options.sessionSecret).pubkey : undefined;
+  const author = await resolveAuthor(options.secret);
+  const sessionMaterial = options.sessionSecret ? describeSecret(options.sessionSecret) : await getForumSessionMaterial();
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning(options.message);
@@ -1005,7 +997,7 @@ export async function publishGeneralChatMessage(options: {
     v: 1,
     b: options.message,
     p: author.pubkeyHex,
-    sp: sessionPubkey,
+    sp: sessionMaterial.pubkeyHex,
     ts: timestamp,
     sig: inner.sig,
     w: wrappedContent,
@@ -1018,7 +1010,7 @@ export async function publishGeneralChatMessage(options: {
     { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
-  await publishToRelays(event, context.relays);
+  await publishToRelaysBestEffort(event, context.relays);
   return { event, chatTag };
 }
 
@@ -1031,7 +1023,7 @@ export async function publishPrivateChatMessage(options: {
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning(options.message);
@@ -1055,20 +1047,21 @@ export async function publishPrivateChatMessage(options: {
     { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
-  await publishToRelays(event, context.relays);
+  await publishToRelaysBestEffort(event, context.relays);
   return { event, chatTag, recipientSessionPubkey: options.recipientSessionPubkey };
 }
 
 export async function listPrivateChatMessages(options: {
   forumInput: string;
-  sessionSecret: string;
+  sessionSecret?: string;
   relays?: string[];
   salt?: string;
   peerPubkey?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
   const chatTag = deriveChatTag(context.forumPrivkey);
-  const { privkey: sessionPrivkey } = deriveSessionKeypair(options.sessionSecret);
+  const sessionMaterial = options.sessionSecret ? describeSecret(options.sessionSecret) : await getForumSessionMaterial();
+  const sessionPrivkey = sessionMaterial.secretKey;
   const events = await fetchEvents({ kinds: [21423], '#t': [chatTag] }, context.relays);
   return events
     .map((event) => {

@@ -1488,9 +1488,9 @@ forumPrivate
 
 forumPrivate
   .command('list')
-  .description('List encrypted private forum messages for a stable session secret.')
+  .description('List encrypted private forum messages for the active forum session.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
-  .requiredOption('--session-secret <secret>', 'Stable session secret used to decrypt incoming private messages.')
+  .option('--session-secret <secret>', 'Override the persisted forum session secret used to decrypt incoming private messages.')
   .option('--peer-pubkey <pubkey>', 'Only include messages from this author pubkey.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')

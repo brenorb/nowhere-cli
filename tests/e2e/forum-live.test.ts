@@ -303,4 +303,44 @@ describe('forum runtime module', () => {
     expect(roomMessages).toHaveLength(1);
     expect(roomMessages[0]?.payload.b).toBe('Meet at fallback point B');
   });
+
+  test('treats chat, private, and room publishes as best-effort when relays do not acknowledge', async () => {
+    const owner = generateSecretMaterial();
+    const recipient = generateSecretMaterial();
+    const forumFragment = makeForum(owner.nowherePubkey);
+    const relays = ['ws://127.0.0.1:1'];
+
+    await expect(publishGeneralChatMessage({
+      forumInput: forumFragment,
+      message: 'General chat',
+      secret: owner.nsec,
+      sessionSecret: recipient.secretHex,
+      relays,
+    })).resolves.toMatchObject({ chatTag: expect.any(String) });
+
+    await expect(publishPrivateChatMessage({
+      forumInput: forumFragment,
+      recipientSessionPubkey: recipient.pubkeyHex,
+      message: 'Private chat',
+      secret: owner.nsec,
+      relays,
+    })).resolves.toMatchObject({ recipientSessionPubkey: recipient.pubkeyHex });
+
+    await expect(publishRoomAnnouncement({
+      forumInput: forumFragment,
+      roomName: 'Logistics',
+      accessCode: 'shared-secret',
+      secret: owner.nsec,
+      relays,
+    })).resolves.toMatchObject({ chatTag: expect.any(String) });
+
+    await expect(publishRoomChatMessage({
+      forumInput: forumFragment,
+      roomName: 'Logistics',
+      accessCode: 'shared-secret',
+      message: 'Fallback route',
+      secret: owner.nsec,
+      relays,
+    })).resolves.toMatchObject({ roomName: 'Logistics' });
+  });
 });
