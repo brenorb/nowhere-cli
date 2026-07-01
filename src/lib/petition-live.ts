@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { Tag } from '@nowhere/codec';
 import { nip44 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
 import type { Event } from 'nostr-tools/core';
@@ -33,6 +34,7 @@ export interface PublishPetitionSignatureOptions<TPayload extends PetitionSignat
   creatorPubkeyHex: string;
   fragment: string;
   relays: string[];
+  petitionTags?: Tag[];
   secret?: string;
   transport?: PetitionRelayTransport;
   timestamp?: number;
@@ -84,6 +86,61 @@ export interface FetchPetitionSignaturesResult<TPayload extends PetitionSignatur
   dedupedEventCount: number;
   rejectedPowCount: number;
   signatures: DecryptedPetitionSignature<TPayload>[];
+}
+
+export type PetitionFieldState = 'off' | 'optional' | 'required';
+
+function hasTag(tags: Tag[], key: string): boolean {
+  return tags.some((tag) => tag.key === key);
+}
+
+function getFieldState(tags: Tag[], lower: string, upper: string): PetitionFieldState {
+  if (hasTag(tags, upper)) {
+    return 'required';
+  }
+  if (hasTag(tags, lower)) {
+    return 'optional';
+  }
+  return 'off';
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function validatePetitionSignaturePayload(payload: PetitionSignaturePayload, tags: Tag[]): void {
+  const fieldChecks: Array<{ state: PetitionFieldState; key: string; label: string }> = [
+    { state: getFieldState(tags, 'n', 'N'), key: 'name', label: 'Name' },
+    { state: getFieldState(tags, 'e', 'E'), key: 'email', label: 'Email' },
+    { state: getFieldState(tags, 'a', 'A'), key: 'address', label: 'Location' },
+    { state: getFieldState(tags, 'p', 'P'), key: 'phone', label: 'Phone' },
+    { state: getFieldState(tags, 'z', 'Z'), key: 'npub', label: 'Nostr npub' },
+    { state: getFieldState(tags, 'u', 'U'), key: 'org', label: 'Organisation' },
+  ];
+
+  for (const fieldCheck of fieldChecks) {
+    if (fieldCheck.state === 'required' && !hasNonEmptyString(payload[fieldCheck.key])) {
+      throw new Error(`${fieldCheck.label} is required by this petition.`);
+    }
+  }
+
+  const fullAddressState = getFieldState(tags, 'b', 'B');
+  if (
+    fullAddressState === 'required'
+    && (!hasNonEmptyString(payload.street) || !hasNonEmptyString(payload.city) || !hasNonEmptyString(payload.addrCountry))
+  ) {
+    throw new Error('Street, city, and address country are required by this petition.');
+  }
+
+  const allowedCountries = tags.find((tag) => tag.key === 'c')?.value?.split('.').filter(Boolean) ?? [];
+  if (allowedCountries.length > 0) {
+    if (!hasNonEmptyString(payload.country)) {
+      throw new Error('Country is required by this petition.');
+    }
+    if (!allowedCountries.includes(payload.country)) {
+      throw new Error(`Country must be one of: ${allowedCountries.join(', ')}.`);
+    }
+  }
 }
 
 export function countLeadingZeroBits(hex: string): number {
@@ -205,6 +262,10 @@ export function createSimplePoolPetitionTransport(pool = new SimplePool()): Peti
 export async function publishPetitionSignature<TPayload extends PetitionSignaturePayload>(
   options: PublishPetitionSignatureOptions<TPayload>,
 ): Promise<PublishedPetitionSignature> {
+  if (options.petitionTags) {
+    validatePetitionSignaturePayload(options.payload, options.petitionTags);
+  }
+
   const transport = options.transport ?? getDefaultTransport();
   const petitionHash = await computePetitionHash(options.fragment);
   const dTag = petitionDTag(petitionHash);

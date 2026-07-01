@@ -17,6 +17,7 @@ import {
   fetchPetitionSignaturesForOwner,
   petitionDTag,
   publishPetitionSignature,
+  validatePetitionSignaturePayload,
 } from '../../src/lib/petition-live.js';
 
 class MemoryPetitionTransport implements PetitionRelayTransport {
@@ -80,6 +81,26 @@ async function makeInvalidPowEvent(options: {
 }
 
 describe('petition live runtime', () => {
+  test('validates petition-required fields and country restrictions from petition tags', async () => {
+    const petition = samplePetition(generateSecretMaterial().nowherePubkey);
+    petition.tags = [
+      { key: 'N', value: undefined },
+      { key: 'E', value: undefined },
+      { key: 'c', value: 'BR.US' },
+    ];
+
+    expect(() => validatePetitionSignaturePayload({ email: 'signer@example.com', country: 'BR' }, petition.tags))
+      .toThrow(/name/i);
+    expect(() => validatePetitionSignaturePayload({ name: 'Signer', email: 'signer@example.com', country: 'CA' }, petition.tags))
+      .toThrow(/country/i);
+
+    expect(() => validatePetitionSignaturePayload({
+      name: 'Signer',
+      email: 'signer@example.com',
+      country: 'US',
+    }, petition.tags)).not.toThrow();
+  });
+
   test('publishes anonymous and secret-backed signatures with upstream kind, d-tag, and PoW', async () => {
     const transport = new MemoryPetitionTransport();
     const owner = generateSecretMaterial();
