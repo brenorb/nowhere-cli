@@ -2,12 +2,13 @@ import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
-const cwd = '/Users/REDACTED';
+const cwd = dirname(dirname(fileURLToPath(new URL(import.meta.url))));
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });

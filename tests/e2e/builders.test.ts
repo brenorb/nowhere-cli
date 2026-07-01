@@ -1,15 +1,16 @@
 import { describe, expect, test } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay } from '../support/mockRelay.js';
 import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
-const cwd = '/Users/REDACTED';
+const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
@@ -138,6 +139,71 @@ describe('builder creation and update commands', () => {
         expect(inspected.site.siteType).toBe('event');
       });
     });
+  });
+
+  test('signer connect, status, and disconnect manage the persisted remote signer session directly', { timeout: 60000 }, async () => {
+    const relay = await startMockRelay();
+    const signer = await startMockNostrConnectSigner({ relayUrl: relay.url });
+
+    const configHome = await mkdtemp(join(tmpdir(), 'nowhere-cli-signer-'));
+
+    try {
+      const env = { XDG_CONFIG_HOME: configHome };
+      const connected = await cliWithEnv(env, 'signer', 'connect', '--bunker', signer.bunkerUri, '--json');
+
+      expect(connected).toMatchObject({
+        connected: true,
+        type: 'nip46',
+        pubkeyHex: signer.pubkeyHex,
+        npub: signer.npub,
+      });
+
+      const status = await cliWithEnv(env, 'signer', 'status', '--json');
+      expect(status).toMatchObject({
+        connected: true,
+        type: 'nip46',
+        pubkeyHex: signer.pubkeyHex,
+        npub: signer.npub,
+        path: join(configHome, 'nowhere-cli', 'active-signer.json'),
+      });
+
+      const persisted = JSON.parse(await readFile(status.path, 'utf8')) as {
+        type: string;
+        pubkeyHex: string;
+        bunkerUri: string;
+        bunkerPubkey: string;
+        clientSecretHex: string;
+        relays: string[];
+      };
+      expect(persisted).toMatchObject({
+        type: 'nip46',
+        pubkeyHex: signer.pubkeyHex,
+        bunkerUri: signer.bunkerUri,
+        bunkerPubkey: signer.pubkeyHex,
+        relays: [relay.url],
+      });
+      expect(persisted.clientSecretHex).toMatch(/^[0-9a-f]{64}$/);
+
+      const disconnected = await cliWithEnv(env, 'signer', 'disconnect', '--json');
+      expect(disconnected).toEqual({
+        connected: false,
+        type: 'nip46',
+        pubkeyHex: signer.pubkeyHex,
+      });
+
+      const cleared = await cliWithEnv(env, 'signer', 'status', '--json');
+      expect(cleared).toEqual({
+        connected: false,
+        type: null,
+        pubkeyHex: null,
+        npub: null,
+        path: status.path,
+      });
+    } finally {
+      await rm(configHome, { recursive: true, force: true });
+      await signer.close();
+      await relay.close();
+    }
   });
 
   test('sign, create, and update can use a persisted remote signer session', { timeout: 60000 }, async () => {

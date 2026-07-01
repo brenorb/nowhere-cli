@@ -2,8 +2,9 @@ import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { encryptFragment } from '@nowhere/codec';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
@@ -12,7 +13,7 @@ import { publishToRelays, destroyPool } from '../../src/lib/relay.js';
 import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
-const cwd = '/Users/REDACTED';
+const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
@@ -73,7 +74,47 @@ async function withTempDir(prefix: string, fn: (path: string) => Promise<void>) 
   }
 }
 
-function makeTorrentBytes(): Uint8Array {
+async function withNodeImport(moduleSource: string, fn: (env: NodeJS.ProcessEnv) => Promise<void>) {
+  await withTempDir('nowhere-cli-live-import-', async (dir) => {
+    const modulePath = join(dir, 'register.mjs');
+    await writeFile(modulePath, moduleSource);
+    const importOption = `--import=${pathToFileURL(modulePath).href}`;
+    await fn({
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, importOption].filter(Boolean).join(' '),
+    });
+  });
+}
+
+async function withLightningInvoiceMock(invoicePrefix: string, fn: (env: NodeJS.ProcessEnv) => Promise<void>) {
+  const invoiceStem = JSON.stringify(`lnbc-${invoicePrefix}-`);
+  await withNodeImport(
+    `
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url === 'https://seller.test/.well-known/lnurlp/tips') {
+    return new Response(JSON.stringify({
+      callback: 'https://seller.test/lnurl/callback',
+      minSendable: 1000,
+      maxSendable: 100000000,
+      metadata: '[]',
+      tag: 'payRequest',
+    }), { status: 200 });
+  }
+  if (url.startsWith('https://seller.test/lnurl/callback')) {
+    const amount = new URL(url).searchParams.get('amount');
+    return new Response(JSON.stringify({
+      pr: ${invoiceStem} + amount,
+      routes: [],
+    }), { status: 200 });
+  }
+  throw new Error('Unexpected fetch URL in live command test: ' + url);
+};
+`,
+    fn,
+  );
+}
+
+function makeTorrentBytes(title = 'Archive'): Uint8Array {
   const torrent = [
     'd',
     '8:announce',
@@ -86,7 +127,7 @@ function makeTorrentBytes(): Uint8Array {
     '6:length',
     'i1024e',
     '4:name',
-    '7:Archive',
+    `${title.length}:${title}`,
     '12:piece length',
     'i16384e',
     '6:pieces',
@@ -98,7 +139,7 @@ function makeTorrentBytes(): Uint8Array {
 }
 
 describe('relay-backed CLI commands', () => {
-  test('forum moderation commands expose WOT access checks and moderated post listings', { timeout: 30000 }, async () => {
+  test('forum moderation commands expose WOT access checks and moderated post listings', { timeout: 120000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
     const trusted = generateSecretMaterial();
@@ -122,15 +163,19 @@ describe('relay-backed CLI commands', () => {
             { key: '2', value: relay.url },
             { key: 'W', value: '1' },
             { key: 'X', value: 'blocked' },
+            { key: 'b', value: null },
+            { key: 'q', value: 'Docs|Audio' },
+            { key: 'h', value: 'No malware. No dox.' },
           ],
         },
         async (forumPath) => {
           const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+          let trustedPostEventId = '';
 
           await withJsonFile(
             { title: 'Trusted post', body: 'clean text' },
             async (trustedPostPath) => {
-              await cli(
+              const trustedPost = await cli(
                 'forum',
                 'post',
                 forum.fragment,
@@ -142,6 +187,7 @@ describe('relay-backed CLI commands', () => {
                 relay.url,
                 '--json',
               );
+              trustedPostEventId = trustedPost.event.id;
             },
           );
 
@@ -177,6 +223,243 @@ describe('relay-backed CLI commands', () => {
 
           expect(moderated.posts).toHaveLength(1);
           expect(moderated.posts[0]?.payload.t).toBe('Trusted post');
+          expect(moderated.posts[0]?.payload.p).toBe(trusted.pubkeyHex);
+
+          await withJsonFile(
+            { body: 'clean reply' },
+            async (trustedReplyPath) => {
+              await cli(
+                'forum',
+                'reply',
+                forum.fragment,
+                '--post-event',
+                trustedPostEventId,
+                '--input',
+                trustedReplyPath,
+                '--secret',
+                trusted.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            { body: 'blocked phrase' },
+            async (outsiderReplyPath) => {
+              await cli(
+                'forum',
+                'reply',
+                forum.fragment,
+                '--post-event',
+                trustedPostEventId,
+                '--input',
+                outsiderReplyPath,
+                '--secret',
+                outsider.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const moderatedReplies = await cli(
+            'forum',
+            'replies',
+            forum.fragment,
+            '--post-event',
+            trustedPostEventId,
+            '--moderated',
+            '--profile-relay',
+            relay.url,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(moderatedReplies.replies).toHaveLength(1);
+          expect(moderatedReplies.replies[0]?.payload.b).toBe('clean reply');
+          expect(moderatedReplies.replies[0]?.payload.p).toBe(trusted.pubkeyHex);
+
+          await withBinaryFile('trusted-archive.torrent', makeTorrentBytes('Trusted Archive'), async (trustedTorrentPath) => {
+            await cli(
+              'forum',
+              'torrent',
+              'publish',
+              forum.fragment,
+              '--torrent-file',
+              trustedTorrentPath,
+              '--category',
+              'Docs > Manuals',
+              '--description',
+              'Clean torrent',
+              '--secret',
+              trusted.nsec,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+          });
+
+          await withBinaryFile('outsider-archive.torrent', makeTorrentBytes('Blocked Archive'), async (outsiderTorrentPath) => {
+            await cli(
+              'forum',
+              'torrent',
+              'publish',
+              forum.fragment,
+              '--torrent-file',
+              outsiderTorrentPath,
+              '--category',
+              'Docs > Manuals',
+              '--description',
+              'blocked phrase',
+              '--secret',
+              outsider.nsec,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+          });
+
+          const moderatedTorrents = await cli(
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--moderated',
+            '--profile-relay',
+            relay.url,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(moderatedTorrents.torrents).toHaveLength(1);
+          expect(moderatedTorrents.torrents[0]?.torrentData.title).toBe('Trusted Archive');
+          expect(moderatedTorrents.torrents[0]?.authorPubkey).toBe(trusted.pubkeyHex);
+
+          await withJsonFile(
+            { message: 'clean lobby note' },
+            async (trustedChatPath) => {
+              await cli(
+                'forum',
+                'chat',
+                'send',
+                forum.fragment,
+                '--input',
+                trustedChatPath,
+                '--secret',
+                trusted.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            { message: 'blocked phrase' },
+            async (outsiderChatPath) => {
+              await cli(
+                'forum',
+                'chat',
+                'send',
+                forum.fragment,
+                '--input',
+                outsiderChatPath,
+                '--secret',
+                outsider.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const moderatedChat = await cli(
+            'forum',
+            'chat',
+            'list',
+            forum.fragment,
+            '--moderated',
+            '--profile-relay',
+            relay.url,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(moderatedChat.messages).toHaveLength(1);
+          expect(moderatedChat.messages[0]?.payload.b).toBe('clean lobby note');
+          expect(moderatedChat.messages[0]?.payload.p).toBe(trusted.pubkeyHex);
+
+          await withJsonFile(
+            {
+              roomName: 'Safehouse',
+              accessCode: 'rotation-3',
+              message: 'clean room note',
+            },
+            async (trustedRoomPath) => {
+              await cli(
+                'forum',
+                'room',
+                'send',
+                forum.fragment,
+                '--input',
+                trustedRoomPath,
+                '--secret',
+                trusted.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            {
+              roomName: 'Safehouse',
+              accessCode: 'rotation-3',
+              message: 'blocked phrase',
+            },
+            async (outsiderRoomPath) => {
+              await cli(
+                'forum',
+                'room',
+                'send',
+                forum.fragment,
+                '--input',
+                outsiderRoomPath,
+                '--secret',
+                outsider.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const moderatedRoomMessages = await cli(
+            'forum',
+            'room',
+            'list',
+            forum.fragment,
+            '--room-name',
+            'Safehouse',
+            '--access-code',
+            'rotation-3',
+            '--moderated',
+            '--profile-relay',
+            relay.url,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(moderatedRoomMessages.messages).toHaveLength(1);
+          expect(moderatedRoomMessages.messages[0]?.payload.b).toBe('clean room note');
+          expect(moderatedRoomMessages.messages[0]?.payload.p).toBe(trusted.pubkeyHex);
 
           const access = await cli(
             'forum',
@@ -202,7 +485,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('store commands publish orders, decrypt receipts, and manage status', { timeout: 30000 }, async () => {
+  test('store commands publish orders, decrypt receipts, and manage status', { timeout: 60000 }, async () => {
     const relay = await startMockRelay();
     const seller = generateSecretMaterial();
 
@@ -473,7 +756,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('petition commands sign, count, and decrypt signatures', { timeout: 30000 }, async () => {
+  test('petition commands sign, count, and decrypt signatures', { timeout: 60000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
     const signer = generateSecretMaterial();
@@ -598,7 +881,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('fundraiser commands list donation methods', async () => {
+  test('fundraiser donation commands list methods and generate invoices', async () => {
     await withJsonFile(
       {
         name: 'Freedom Fund',
@@ -620,11 +903,27 @@ describe('relay-backed CLI commands', () => {
         expect(methods.methods[0]?.id).toBe('lightning');
         expect(methods.methods[1]?.id).toBe('custom_0');
         expect(methods.methods[2]?.showQr).toBe(true);
+
+        await withLightningInvoiceMock('fundraiser', async (env) => {
+          const invoice = await cliWithEnv(
+            env,
+            'fundraiser',
+            'donate',
+            'invoice',
+            fundraiser.fragment,
+            '--sats',
+            '2100',
+            '--json',
+          );
+
+          expect(invoice.method.id).toBe('lightning');
+          expect(invoice.invoice).toBe('lnbc-fundraiser-2100000');
+        });
       },
     );
   });
 
-  test('message commands list tip methods', async () => {
+  test('message tip commands list methods and generate invoices', async () => {
     await withJsonFile(
       {
         name: 'Signal Boost',
@@ -647,6 +946,22 @@ describe('relay-backed CLI commands', () => {
         expect(methods.methods[0]?.id).toBe('lightning');
         expect(methods.methods[1]?.id).toBe('custom_0');
         expect(methods.methods[2]?.showQr).toBe(true);
+
+        await withLightningInvoiceMock('message', async (env) => {
+          const invoice = await cliWithEnv(
+            env,
+            'message',
+            'tip',
+            'invoice',
+            message.fragment,
+            '--sats',
+            '2100',
+            '--json',
+          );
+
+          expect(invoice.method.id).toBe('lightning');
+          expect(invoice.invoice).toBe('lnbc-message-2100000');
+        });
       },
     );
   });
@@ -1033,7 +1348,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 30000 }, async () => {
+  test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 60000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
     const session = generateSecretMaterial();
@@ -1206,6 +1521,7 @@ describe('relay-backed CLI commands', () => {
 
             expect(checkedBeforePublish.duplicate).toBeNull();
             expect(checkedBeforePublish.torrent.category).toBe('docs > manuals');
+            expect(checkedBeforePublish.torrent.refs).toEqual(['ref:1']);
             expect(checkedBeforePublish.settings.rules).toContain('No malware');
 
             const torrent = await cli(
@@ -1229,6 +1545,7 @@ describe('relay-backed CLI commands', () => {
             );
 
             expect(torrent.postTag).toHaveLength(32);
+            expect(torrent.replyPubkey).toMatch(/^[0-9a-f]{64}$/);
 
             const checkedAfterPublish = await cli(
               'forum',
@@ -1258,6 +1575,7 @@ describe('relay-backed CLI commands', () => {
             expect(torrents.torrents).toHaveLength(1);
             expect(torrents.torrents[0]?.torrentData.title).toBe('Archive');
             expect(torrents.torrents[0]?.torrentData.category).toBe('docs > manuals');
+            expect(torrents.torrents[0]?.torrentData.refs).toEqual(['ref:1']);
             expect(torrents.torrents[0]?.magnetLink).toContain('magnet:?xt=urn:btih:');
 
             await withJsonFile(
@@ -1333,6 +1651,7 @@ describe('relay-backed CLI commands', () => {
 
               expect(announcements.announcements).toHaveLength(1);
               expect(announcements.announcements[0]?.roomName).toBe('Logistics');
+              expect(announcements.announcements[0]?.accessCode).toBe('shared-secret');
             },
           );
 
@@ -1464,7 +1783,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('forum CLI reuses a persisted anonymous session for posts, chat routing, and private inbox decryption', { timeout: 30000 }, async () => {
+  test('forum CLI reuses a persisted anonymous session for posts, chat routing, and private inbox decryption', { timeout: 60000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
 

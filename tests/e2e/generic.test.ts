@@ -1,14 +1,18 @@
-import { bytesToBase64url, encodeMessage, type MessageData } from '@nowhere/codec';
+import { encodeMessage, encryptFragment, type MessageData } from '@nowhere/codec';
 import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { getPublicKey } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
+const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
 const cli = async (...args: string[]) => {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
-    cwd: '/Users/REDACTED',
+    cwd,
   });
   return JSON.parse(result.stdout);
 };
@@ -22,6 +26,21 @@ function sampleMessage(nowherePubkey: string): MessageData {
     description: 'Hello from the CLI.',
     tags: [{ key: 't', value: 'Status Update' }],
   };
+}
+
+async function encryptToLeadingDash(fragment: string, passwordPrefix: string): Promise<{
+  encryptedFragment: string;
+  password: string;
+}> {
+  for (let index = 0; index < 4096; index += 1) {
+    const password = `${passwordPrefix}-${index}`;
+    const encryptedFragment = await encryptFragment(fragment, password);
+    if (encryptedFragment.startsWith('-')) {
+      return { encryptedFragment, password };
+    }
+  }
+
+  throw new Error('Could not generate a leading-dash encrypted fragment.');
 }
 
 describe('generic CLI commands', () => {
@@ -77,6 +96,34 @@ describe('generic CLI commands', () => {
 
     const decrypted = await cli('decrypt', encrypted.encryptedUrl, '--password', 'correct horse battery staple', '--json');
     expect(decrypted.fragment).toBe(fragment);
+  });
+
+  test('decrypt accepts a leading-dash encrypted fragment as the first positional argument', async () => {
+    const material = generateSecretMaterial();
+    const fragment = encodeMessage(sampleMessage(material.nowherePubkey)).fragment;
+    const { encryptedFragment, password } = await encryptToLeadingDash(fragment, 'decrypt-positional');
+
+    const decrypted = await cli('decrypt', encryptedFragment, '--password', password, '--json');
+
+    expect(decrypted.fragment).toBe(fragment);
+    expect(decrypted.url).toBe(fragmentToUrl(fragment));
+  });
+
+  test('inspect and verify accept leading-dash encrypted fragments as positional arguments', async () => {
+    const material = generateSecretMaterial();
+    const fragment = encodeMessage(sampleMessage(material.nowherePubkey)).fragment;
+    const signed = await cli('sign', fragment, '--secret', material.secretHex, '--json');
+    const { encryptedFragment, password } = await encryptToLeadingDash(signed.signedFragment, 'inspect-verify-positional');
+
+    const inspected = await cli('inspect', encryptedFragment, '--password', password, '--json');
+    const verified = await cli('verify', encryptedFragment, '--password', password, '--json');
+
+    expect(inspected.decrypted).toBe(true);
+    expect(inspected.signed).toBe(true);
+    expect(inspected.site.name).toBe('Alice');
+    expect(verified.signed).toBe(true);
+    expect(verified.signaturePubkeyHex).toBe(material.pubkeyHex);
+    expect(verified.unsignedFragment).toBe(fragment);
   });
 
   test('signed fragments keep the embedded public key aligned with the secret key', async () => {
