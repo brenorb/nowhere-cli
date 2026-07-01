@@ -14,7 +14,7 @@ import {
 import { resolveSiteInput } from './fragments.js';
 import { getAvailablePaymentMethods, getPaymentMethod, type AvailablePaymentMethod, type PaymentMethodConfig } from './payment-methods.js';
 
-export interface CheckoutCartItem extends OrderItem {}
+export type CheckoutCartItem = OrderItem;
 
 export interface CheckoutFieldSpec {
   visible: string[];
@@ -91,10 +91,6 @@ function isRecord(value: unknown): value is Record<string, string> {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function centsToUnits(value: number): number {
-  return round2(value / 100);
 }
 
 function getStoreCurrency(tags: Tag[]): string {

@@ -11,7 +11,6 @@ import { NostrConnectClient } from './nostr-connect-client.js';
 import { getPool } from './relay.js';
 
 const ACTIVE_SIGNER_FILE = 'active-signer.json';
-const NOSTR_CONNECT_KIND = 24133;
 const NOSTR_CONNECT_APP_NAME = 'Nowhere CLI';
 const NOSTR_CONNECT_APP_PERMS = [
   'get_public_key',

@@ -30,7 +30,9 @@ async function readPersistedForumSession(path: string): Promise<PersistedForumSe
     }
 
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to read the persisted forum session at ${path}: ${message}`);
+    throw new Error(`Failed to read the persisted forum session at ${path}: ${message}`, {
+      cause: error,
+    });
   }
 }
 

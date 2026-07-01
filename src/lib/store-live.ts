@@ -278,10 +278,6 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function centsToMajorUnits(value: number | undefined): number | undefined {
-  return value === undefined ? undefined : value / 100;
-}
-
 function normalizeAmountForComparison(stored: number, expected: number): number {
   const asMajorUnits = stored / 100;
   return Math.abs(asMajorUnits - expected) <= Math.abs(stored - expected) ? asMajorUnits : stored;
@@ -597,7 +593,7 @@ async function resolveStoreData(storeUrl: string): Promise<StoreData> {
 
 export function createSimplePoolRelayClient(pool = new SimplePool()): StoreRelayClient {
   return {
-    async publish(event: Event, relays: string[], _label: string): Promise<void> {
+    async publish(event: Event, relays: string[]): Promise<void> {
       const targets = uniqueRelays(relays);
       const results = await Promise.allSettled(pool.publish(targets, event));
       const confirmed = results.filter(

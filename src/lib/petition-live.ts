@@ -28,7 +28,7 @@ export interface PetitionRelayTransport {
   count?(filter: Filter, relays: string[]): Promise<number>;
 }
 
-export interface PetitionSignaturePayload extends Record<string, unknown> {}
+export type PetitionSignaturePayload = Record<string, unknown>;
 
 export interface PublishPetitionSignatureOptions<TPayload extends PetitionSignaturePayload> {
   payload: TPayload;
