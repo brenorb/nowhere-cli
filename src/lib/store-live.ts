@@ -292,6 +292,49 @@ function sortEventsDescending(events: Event[]): Event[] {
   });
 }
 
+async function fetchEventsPaginated(
+  relayClient: StoreRelayClient,
+  filter: Filter,
+  relays: string[],
+): Promise<Event[]> {
+  const pageLimit = 5000;
+  const seen = new Set<string>();
+  const events: Event[] = [];
+  let until = filter.until;
+
+  while (true) {
+    const batch = await relayClient.fetchEvents(
+      {
+        ...filter,
+        limit: pageLimit,
+        ...(until !== undefined ? { until } : {}),
+      },
+      relays,
+    );
+    if (batch.length === 0) {
+      break;
+    }
+
+    const fresh = batch.filter((event) => !seen.has(event.id));
+    for (const event of fresh) {
+      seen.add(event.id);
+      events.push(event);
+    }
+
+    const oldest = batch.reduce((min, event) => Math.min(min, event.created_at), Number.POSITIVE_INFINITY);
+    const nextUntil = oldest - 1;
+    if (until !== undefined && nextUntil >= until) {
+      break;
+    }
+    if (filter.since !== undefined && nextUntil < filter.since) {
+      break;
+    }
+    until = nextUntil;
+  }
+
+  return events;
+}
+
 function getStoreCurrency(tags: Tag[]): string {
   return tags.find((tag) => tag.key === '$')?.value ?? 'USD';
 }
@@ -794,7 +837,7 @@ export async function fetchOrdersForSeller(
   const failedEventIds: string[] = [];
   const seenOrderIds = new Set<string>();
 
-  for (const event of sortEventsDescending(await relayClient.fetchEvents(filter, relays))) {
+  for (const event of sortEventsDescending(await fetchEventsPaginated(relayClient, filter, relays))) {
     try {
       const order = await decryptOrderEventWithAccess(event, input.sellerSecret, input.sellerSigner);
       if (order.storeId !== context.lookupHash || seenOrderIds.has(order.orderId)) {
@@ -802,6 +845,9 @@ export async function fetchOrdersForSeller(
       }
       seenOrderIds.add(order.orderId);
       orders.push({ event, order });
+      if (input.limit !== undefined && orders.length >= input.limit) {
+        break;
+      }
     } catch {
       failedEventIds.push(event.id);
     }
@@ -841,7 +887,8 @@ export async function fetchOrdersByIds(
 
   for (let index = 0; index < normalizedIds.length; index += batchSize) {
     const batch = normalizedIds.slice(index, index + batchSize);
-    const events = sortEventsDescending(await relayClient.fetchEvents(
+    const events = sortEventsDescending(await fetchEventsPaginated(
+      relayClient,
       {
         kinds: [NOWHERE_APPLICATION_KIND],
         '#d': batch.map((orderId) => `${NOWHERE_DTAG_PREFIX}/${orderId}`),

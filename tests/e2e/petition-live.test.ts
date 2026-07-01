@@ -23,12 +23,26 @@ import {
 class MemoryPetitionTransport implements PetitionRelayTransport {
   readonly events: Event[] = [];
 
+  constructor(private readonly maxPerQuery?: number) {}
+
   async publish(event: Event): Promise<void> {
     this.events.push(event);
   }
 
   async fetch(filter: Filter): Promise<Event[]> {
-    return this.events.filter((event) => matchFilter(filter, event));
+    const events = this.events
+      .filter((event) => matchFilter(filter, event))
+      .sort((left, right) => {
+        if (left.created_at !== right.created_at) {
+          return right.created_at - left.created_at;
+        }
+        return right.id.localeCompare(left.id);
+      });
+    const limit = Math.min(
+      filter.limit ?? Number.POSITIVE_INFINITY,
+      this.maxPerQuery ?? Number.POSITIVE_INFINITY,
+    );
+    return Number.isFinite(limit) ? events.slice(0, limit) : events;
   }
 
   async count(filter: Filter): Promise<number> {
@@ -212,4 +226,36 @@ describe('petition live runtime', () => {
     expect(byPubkey.get(secretPublish.signerPubkeyHex)?.payload?.comment).toBe('Count me in.');
     expect(byPubkey.has(getPublicKey(Buffer.from(rejectedSigner.secretHex, 'hex')))).toBe(false);
   }, 30_000);
+
+  test('paginates petition signatures when relay queries are capped', async () => {
+    const transport = new MemoryPetitionTransport(2);
+    const owner = generateSecretMaterial();
+    const fragment = encodePetition(samplePetition(owner.nowherePubkey)).fragment;
+    const signerPubkeys: string[] = [];
+
+    for (let index = 0; index < 5; index += 1) {
+      const signer = generateSecretMaterial();
+      signerPubkeys.push(signer.pubkeyHex);
+      await publishPetitionSignature({
+        payload: { name: `Signer ${index}` },
+        creatorPubkeyHex: owner.pubkeyHex,
+        fragment,
+        relays: ['wss://relay.example.test'],
+        transport,
+        secret: signer.secretHex,
+        timestamp: 1_719_100_000_000 + (index * 1_000),
+      });
+    }
+
+    const fetched = await fetchPetitionSignaturesForOwner<{ name: string }>({
+      fragment,
+      ownerSecret: owner.secretHex,
+      relays: ['wss://relay.example.test'],
+      transport,
+    });
+
+    expect(fetched.rawEventCount).toBe(5);
+    expect(fetched.signatures).toHaveLength(5);
+    expect(fetched.signatures.map((entry) => entry.pubkey).sort()).toEqual([...signerPubkeys].sort());
+  }, 60_000);
 });
