@@ -178,7 +178,13 @@ describe('builder creation and update commands', () => {
 
       const connected = await cliWithEnv(
         env,
-        'signer', 'wait', '--uri', handshake.uri, '--client-secret', handshake.clientSecretHex, '--json',
+        'signer',
+        'wait',
+        '--uri',
+        handshake.uri,
+        '--client-secret',
+        handshake.clientSecretHex,
+        '--json',
       );
       expect(connected.connected).toBe(true);
       expect(connected.pubkeyHex).toBe(signer.pubkeyHex);
