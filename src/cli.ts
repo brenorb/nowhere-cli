@@ -39,11 +39,13 @@ import {
 import {
   createSimplePoolRelayClient,
   decryptOrderReceipt,
+  fetchOrdersByIds,
   fetchCurrentStatus,
   fetchOrdersForSeller,
   type OrderReceipt,
   publishOrderReceipt,
   publishStoreStatus,
+  verifyStoreOrderPayload,
 } from './lib/store-live.js';
 
 function fail(message: string): never {
@@ -238,6 +240,10 @@ function readNumber(value: Record<string, unknown>, key: string, required = true
   }
 
   return candidate;
+}
+
+function toCents(value: number): number {
+  return Math.round(value * 100);
 }
 
 function readBoolean(value: Record<string, unknown>, key: string, required = true): boolean | undefined {
@@ -551,15 +557,17 @@ store
           ...(readString(entry, 'v', false) ? { v: readString(entry, 'v', false) } : {}),
         };
       }),
-      subtotal: readNumber(payload, 'subtotal') as number,
-      shipping: readNumber(payload, 'shipping') as number,
-      total: readNumber(payload, 'total') as number,
+      subtotal: toCents(readNumber(payload, 'subtotal') as number),
+      shipping: toCents(readNumber(payload, 'shipping') as number),
+      total: toCents(readNumber(payload, 'total') as number),
       totalSats: readNumber(payload, 'totalSats', false),
       exchangeRate: readNumber(payload, 'exchangeRate', false),
       rateSource: readString(payload, 'rateSource', false),
       paymentMethod: readString(payload, 'paymentMethod', false),
       paymentCurrency: readString(payload, 'paymentCurrency', false),
-      paymentAmount: readNumber(payload, 'paymentAmount', false),
+      paymentAmount: readNumber(payload, 'paymentAmount', false) !== undefined
+        ? toCents(readNumber(payload, 'paymentAmount', false) as number)
+        : undefined,
       orderId: readString(payload, 'orderId', false),
       timestamp: readNumber(payload, 'timestamp', false),
       relayList: getRelayList(options.relay),
@@ -602,22 +610,62 @@ store
   .description('Fetch and decrypt seller-visible orders for a store.')
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--order-id <id>', 'Only fetch specific order ids. Repeat to pass more than one.', collectOption, [])
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--since <unix>', 'Only fetch orders at or after this Unix timestamp.')
   .option('--until <unix>', 'Only fetch orders at or before this Unix timestamp.')
   .option('--limit <count>', 'Maximum number of events to inspect.')
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
-    const fetched = await withStoreRelayClient((relayClient) => fetchOrdersForSeller({
-      storeUrl: storeInput,
-      sellerSecret: options.secret,
-      relayList: getRelayList(options.relay),
-      since: options.since ? Number.parseInt(options.since, 10) : undefined,
-      until: options.until ? Number.parseInt(options.until, 10) : undefined,
-      limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
-    }, relayClient));
+    const requestedOrderIds = getRelayList(options.orderId);
+    const fetched = await withStoreRelayClient((relayClient) => (
+      requestedOrderIds && requestedOrderIds.length > 0
+        ? fetchOrdersByIds({
+            storeUrl: storeInput,
+            sellerSecret: options.secret,
+            orderIds: requestedOrderIds,
+            relayList: getRelayList(options.relay),
+          }, relayClient)
+        : fetchOrdersForSeller({
+            storeUrl: storeInput,
+            sellerSecret: options.secret,
+            relayList: getRelayList(options.relay),
+            since: options.since ? Number.parseInt(options.since, 10) : undefined,
+            until: options.until ? Number.parseInt(options.until, 10) : undefined,
+            limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
+          }, relayClient)
+    ));
 
     printOutput(fetched, Boolean(options.json));
+  });
+
+store
+  .command('verify')
+  .description('Verify a store order, raw encrypted event, or seller receipt against the store configuration.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--input <path>', 'Path to the receipt, order event, or raw order JSON, or "-" for stdin.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret. Required for receipts or encrypted order events.')
+  .option('--received-sats <count>', 'Expected sats received in your wallet for sats-based payments.')
+  .option('--store-sats-per-unit <value>', 'Override the historical sats-per-unit used for the store currency.')
+  .option('--payment-sats-per-unit <value>', 'Override the historical sats-per-unit used for the payment currency.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const payload = await readJsonInput(options.input);
+    printOutput(
+      await verifyStoreOrderPayload({
+        storeUrl: storeInput,
+        payload,
+        sellerSecret: options.secret,
+        receivedSats: options.receivedSats ? Number.parseInt(options.receivedSats, 10) : undefined,
+        storeRateOverride: options.storeSatsPerUnit
+          ? { satsPerUnit: Number.parseFloat(options.storeSatsPerUnit), source: 'override' }
+          : undefined,
+        paymentRateOverride: options.paymentSatsPerUnit
+          ? { satsPerUnit: Number.parseFloat(options.paymentSatsPerUnit), source: 'override' }
+          : undefined,
+      }),
+      Boolean(options.json),
+    );
   });
 
 const storeStatus = store.command('status').description('Publish or inspect encrypted store status.');

@@ -10,9 +10,11 @@ import {
   computeLookupHash,
   decryptOrderReceipt,
   fetchCurrentStatus,
+  fetchOrdersByIds,
   fetchOrdersForSeller,
   publishOrderReceipt,
   publishStoreStatus,
+  verifyStoreOrderPayload,
   type StatusPayload,
   type StoreRelayClient,
 } from '../../src/lib/store-live.js';
@@ -106,20 +108,25 @@ function matchesFilter(filter: Filter, event: Event): boolean {
   return true;
 }
 
-function buildStoreUrl(pubkey: string, name = 'Freedom Market'): string {
+function buildStoreUrl(
+  pubkey: string,
+  name = 'Freedom Market',
+  options?: { tags?: StoreData['tags']; items?: StoreData['items'] },
+): string {
   const store: StoreData = {
     version: 1,
     pubkey,
     name,
     description: 'Peer-to-peer goods.',
-    tags: [
+    tags: options?.tags ?? [
+      { key: '$', value: 'USD' },
       { key: 'k', value: '1' },
       { key: '1', value: 'wss://inventory.example' },
       { key: '2', value: 'wss://orders.example,wss://orders-backup.example' },
     ],
-    items: [
-      { name: 'Sticker Pack', price: 750, tags: [] },
-      { name: 'Poster', price: 2500, tags: [] },
+    items: options?.items ?? [
+      { name: 'Sticker Pack', price: 7.5, tags: [] },
+      { name: 'Poster', price: 25, tags: [] },
     ],
   };
 
@@ -237,5 +244,109 @@ describe('store-live runtime', () => {
 
     expect(fetched.payload).toEqual(status);
     expect(fetched.event?.pubkey).toBe(seller.pubkeyHex);
+  });
+
+  test('fetches specific seller orders by their order ids', async () => {
+    const relayClient = new MemoryRelayClient();
+    const seller = generateSecretMaterial();
+    const storeUrl = buildStoreUrl(seller.nowherePubkey, 'Freedom Market');
+    const orderRelays = ['wss://orders.example', 'wss://orders-backup.example'];
+
+    const first = await publishOrderReceipt(
+      {
+        storeUrl,
+        relayList: orderRelays,
+        items: [{ i: 0, qty: 1 }],
+        subtotal: 750,
+        shipping: 0,
+        total: 750,
+        buyer: { name: 'Alice' },
+      },
+      relayClient,
+    );
+
+    await publishOrderReceipt(
+      {
+        storeUrl,
+        relayList: orderRelays,
+        items: [{ i: 1, qty: 1 }],
+        subtotal: 2500,
+        shipping: 0,
+        total: 2500,
+        buyer: { name: 'Bob' },
+      },
+      relayClient,
+    );
+
+    const fetched = await fetchOrdersByIds(
+      {
+        storeUrl,
+        sellerSecret: seller.secretHex,
+        relayList: orderRelays,
+        orderIds: [first.order.orderId],
+      },
+      relayClient,
+    );
+
+    expect(fetched.failedEventIds).toEqual([]);
+    expect(fetched.orders).toHaveLength(1);
+    expect(fetched.orders[0]?.order.orderId).toBe(first.order.orderId);
+    expect(fetched.orders[0]?.order.buyer.name).toBe('Alice');
+  });
+
+  test('verifies receipt payloads against the store with historical rate overrides', async () => {
+    const relayClient = new MemoryRelayClient();
+    const seller = generateSecretMaterial();
+    const storeUrl = buildStoreUrl(seller.nowherePubkey, 'Discount Market', {
+      tags: [
+        { key: '$', value: 'USD' },
+        { key: '1', value: 'wss://inventory.example' },
+        { key: '2', value: 'wss://orders.example,wss://orders-backup.example' },
+        { key: 'B', value: '2:10' },
+        { key: 's', value: '300' },
+      ],
+      items: [
+        { name: 'Manual', price: 10, tags: [] },
+      ],
+    });
+
+    const published = await publishOrderReceipt(
+      {
+        storeUrl,
+        relayList: ['wss://orders.example'],
+        items: [{ i: 0, qty: 2 }],
+        subtotal: 1800,
+        shipping: 300,
+        total: 2100,
+        buyer: { name: 'Alice' },
+        paymentMethod: 'lightning',
+        paymentCurrency: 'BTC',
+        totalSats: 42000,
+        timestamp: 1_700_000_000,
+      },
+      relayClient,
+    );
+
+    const verified = await verifyStoreOrderPayload({
+      storeUrl,
+      payload: published.receiptPayload,
+      sellerSecret: seller.nsec,
+      receivedSats: 42000,
+      storeRateOverride: {
+        satsPerUnit: 2000,
+        source: 'test',
+      },
+    });
+
+    expect(verified.source).toBe('receipt');
+    expect(verified.ok).toBe(true);
+    expect(verified.order.orderId).toBe(published.order.orderId);
+    expect(verified.verification.expectedSubtotal).toBe(18);
+    expect(verified.verification.expectedShipping).toBe(3);
+    expect(verified.verification.expectedTotal).toBe(21);
+    expect(verified.verification.expectedSats).toBe(42000);
+    expect(verified.verification.subtotalMatch).toBe(true);
+    expect(verified.verification.shippingMatch).toBe(true);
+    expect(verified.verification.totalMatch).toBe(true);
   });
 });
