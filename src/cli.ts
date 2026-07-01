@@ -4,7 +4,9 @@ import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
 import {
+  buildNostrConnectHandshake,
   connectSignerViaBunker,
+  connectSignerViaHandshake,
   disconnectActiveSigner,
   getActiveSignerStatus,
   requireActiveSigner,
@@ -704,7 +706,12 @@ signerCommand
   .requiredOption('--bunker <input>', 'bunker:// URI or name@domain exposed by the signer.')
   .option('--json', 'Emit JSON output.')
   .action(async (options) => {
-    const signer = await connectSignerViaBunker(options.bunker);
+    let authUrl: string | null = null;
+    const signer = await connectSignerViaBunker(options.bunker, {
+      onAuthUrl: (url) => {
+        authUrl = url;
+      },
+    });
     try {
       printOutput(
         {
@@ -712,6 +719,58 @@ signerCommand
           type: signer.type,
           pubkeyHex: signer.pubkeyHex,
           npub: nip19.npubEncode(signer.pubkeyHex),
+          authUrl,
+        },
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+signerCommand
+  .command('start')
+  .description('Generate a nostrconnect:// deeplink or QR payload for remote signer pairing.')
+  .option('--relay <url>', 'Relay override for the pairing session. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action((options) => {
+    const handshake = buildNostrConnectHandshake(getRelayList(options.relay) ?? []);
+    printOutput(
+      {
+        uri: handshake.uri,
+        deeplinkUri: handshake.uri,
+        clientSecretHex: handshake.clientSecretHex,
+        relays: handshake.relays,
+      },
+      Boolean(options.json),
+    );
+  });
+
+signerCommand
+  .command('wait')
+  .description('Wait for a signer to authorize a generated nostrconnect:// pairing session and persist it.')
+  .requiredOption('--uri <uri>', 'The nostrconnect:// URI returned by `nowhere signer start`.')
+  .requiredOption('--client-secret <hex>', 'The client secret returned by `nowhere signer start`.')
+  .option('--timeout-ms <ms>', 'How long to wait before giving up.', (value) => Number.parseInt(value, 10))
+  .option('--json', 'Emit JSON output.')
+  .action(async (options) => {
+    let authUrl: string | null = null;
+    const signer = await connectSignerViaHandshake({
+      uri: options.uri,
+      clientSecretHex: options.clientSecret,
+      timeoutMs: options.timeoutMs,
+      onAuthUrl: (url) => {
+        authUrl = url;
+      },
+    });
+    try {
+      printOutput(
+        {
+          connected: true,
+          type: signer.type,
+          pubkeyHex: signer.pubkeyHex,
+          npub: nip19.npubEncode(signer.pubkeyHex),
+          authUrl,
         },
         Boolean(options.json),
       );

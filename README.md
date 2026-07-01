@@ -35,6 +35,8 @@ pnpm cli pubkey --secret nsec1...
 pnpm cli inspect 'https://hostednowhere.com/s#...'
 pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
 pnpm cli signer connect --bunker 'bunker://...' --json
+pnpm cli signer start --relay wss://bucket.coracle.social --json
+pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
 pnpm cli create store --input ./store.json --use-signer --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
@@ -102,7 +104,7 @@ Publish-style commands accept structured JSON via `--input <path>` or `--input -
 
 Any runtime command that opens a store, petition, fundraiser, message, or forum now also accepts `--password <password>` so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site.
 
-`signer connect`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
+`signer connect`, `signer start`, `signer wait`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `signer start` when you need a generated `nostrconnect://` deeplink or QR payload first, then complete pairing with `signer wait`. `signer connect` and `signer wait` both surface `authUrl` when the signer requires an out-of-band approval step. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
 
 Encrypted fragments are accepted as normal positional arguments even when the base64url payload begins with `-`, so agents do not need to prepend `--` manually when opening encrypted store, petition, fundraiser, message, or forum links.
 

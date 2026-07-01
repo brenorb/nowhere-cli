@@ -13,12 +13,14 @@ interface NostrConnectRequest {
 
 interface MockNostrConnectSignerOptions {
   relayUrl: string;
+  authUrl?: string;
 }
 
 export interface MockNostrConnectSignerHandle {
   bunkerUri: string;
   pubkeyHex: string;
   npub: string;
+  authorizeUri: (uri: string) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -71,6 +73,21 @@ export async function startMockNostrConnectSigner(
         try {
           const requestJson = nip44Decrypt(event.content, getConversationKey(signerSecret, event.pubkey));
           const request = JSON.parse(requestJson) as NostrConnectRequest;
+          if (request.method === 'connect' && options.authUrl) {
+            const authEvent = finalizeEvent(
+              {
+                kind: NOSTR_CONNECT_KIND,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [['p', event.pubkey]],
+                content: nip44Encrypt(
+                  JSON.stringify({ id: request.id, result: 'auth_url', error: options.authUrl }),
+                  getConversationKey(signerSecret, event.pubkey),
+                ),
+              },
+              signerSecret,
+            );
+            await Promise.allSettled(pool.publish([options.relayUrl], authEvent));
+          }
           const responseEvent = finalizeEvent(
             {
               kind: NOSTR_CONNECT_KIND,
@@ -93,6 +110,25 @@ export async function startMockNostrConnectSigner(
     bunkerUri: `bunker://${pubkeyHex}?relay=${relayParam}`,
     pubkeyHex,
     npub: nip19.npubEncode(pubkeyHex),
+    authorizeUri: async (uri: string) => {
+      const parsed = new URL(uri);
+      const clientPubkey = parsed.hostname || parsed.pathname.replace(/^\//, '');
+      const secret = parsed.searchParams.get('secret');
+      if (!clientPubkey || !secret) {
+        throw new Error('Invalid nostrconnect URI for mock authorization.');
+      }
+
+      const ackEvent = finalizeEvent(
+        {
+          kind: NOSTR_CONNECT_KIND,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['p', clientPubkey]],
+          content: nip44Encrypt(JSON.stringify({ result: secret }), getConversationKey(signerSecret, clientPubkey)),
+        },
+        signerSecret,
+      );
+      await Promise.allSettled(pool.publish([options.relayUrl], ackEvent));
+    },
     close: async () => {
       subscription.close();
       pool.destroy();
