@@ -64,6 +64,18 @@ import {
 import { beginStoreCheckout, quoteStoreCheckout } from './lib/store-checkout.js';
 import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
+  confirmStoreOrders,
+  getStoreManageRecord,
+  getStoreOrderOverlay,
+  hideStoreOrders,
+  reconcileStoreOrders,
+  setStoreOrderNote,
+  setStoreOrderStatus,
+  unconfirmStoreOrders,
+  unhideStoreOrders,
+  type StoreOrderStatus,
+} from './lib/store-manage-state.js';
+import {
   createSimplePoolRelayClient,
   decryptOrderReceipt,
   decryptOrderReceiptWithAccess,
@@ -73,6 +85,7 @@ import {
   type OrderReceipt,
   publishOrderReceipt,
   publishStoreStatus,
+  resolveStoreContext,
   verifyStoreOrderPayload,
 } from './lib/store-live.js';
 
@@ -408,6 +421,17 @@ async function readObjectInput(path: string, message: string): Promise<Record<st
   return requireObject(await readJsonInput(path), message);
 }
 
+async function readTextInput(path: string): Promise<string> {
+  if (path === '-') {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+  return readFile(path, 'utf8');
+}
+
 function readString(value: Record<string, unknown>, key: string, required = true): string | undefined {
   const candidate = value[key];
   if (candidate === undefined || candidate === null) {
@@ -458,6 +482,15 @@ function readBoolean(value: Record<string, unknown>, key: string, required = tru
   }
 
   return candidate;
+}
+
+const storeOrderStatuses: StoreOrderStatus[] = ['new', 'confirmed', 'processing', 'fulfilled', 'refunded', 'no_payment'];
+
+function readStoreOrderStatus(value: string): StoreOrderStatus {
+  if (!storeOrderStatuses.includes(value as StoreOrderStatus)) {
+    fail(`Expected --status to be one of: ${storeOrderStatuses.join(', ')}.`);
+  }
+  return value as StoreOrderStatus;
 }
 
 function readArray(value: Record<string, unknown>, key: string, required = true): unknown[] | undefined {
@@ -1100,12 +1133,24 @@ store
               limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
             }, relayClient)
       ));
+      const state = await getStoreManageRecord(fetched.context.lookupHash);
+      const ordersWithState = fetched.orders.map((entry) => ({
+        ...entry,
+        manage: getStoreOrderOverlay(state, entry.order.orderId),
+      }));
 
       if (options.csv) {
-        printTextOutput(formatStoreOrdersCsv(fetched, store.siteData));
+        printTextOutput(formatStoreOrdersCsv({ ...fetched, orders: ordersWithState }, store.siteData));
         return;
       }
-      printOutput(fetched, Boolean(options.json));
+      printOutput(
+        {
+          ...fetched,
+          orders: ordersWithState,
+          manageState: state,
+        },
+        Boolean(options.json),
+      );
     } finally {
       await closeSignerQuietly(signer);
     }
@@ -1142,6 +1187,202 @@ store
             ? { satsPerUnit: Number.parseFloat(options.paymentSatsPerUnit), source: 'override' }
             : undefined,
         }),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+const storeManage = store.command('manage').description('Persist local seller bookkeeping for store orders.');
+
+storeManage
+  .command('state')
+  .description('Inspect the local bookkeeping state for a store.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await getStoreManageRecord(context.lookupHash),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('status')
+  .description('Set a local seller-side status for one or more order ids.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .requiredOption('--status <status>', `One of: ${storeOrderStatuses.join(', ')}.`)
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await setStoreOrderStatus(context.lookupHash, orderIds, readStoreOrderStatus(options.status)),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('confirm')
+  .description('Mark one or more orders as payment confirmed in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await confirmStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('unconfirm')
+  .description('Remove local payment confirmations for one or more orders.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await unconfirmStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('hide')
+  .description('Hide one or more orders in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await hideStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('unhide')
+  .description('Unhide one or more orders in local bookkeeping.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id. Repeat to pass more than one.', collectOption, [])
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    const orderIds = getRelayList(options.orderId);
+    if (!orderIds || orderIds.length === 0) {
+      fail('Pass at least one --order-id.');
+    }
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await unhideStoreOrders(context.lookupHash, orderIds),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('note')
+  .description('Attach or replace a private local note for an order.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--order-id <id>', 'Target order id.')
+  .requiredOption('--note <text>', 'The note text. Pass an empty string to clear it.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const context = await resolveStoreContext(store.url);
+    printOutput(
+      {
+        storeId: context.lookupHash,
+        state: await setStoreOrderNote(context.lookupHash, options.orderId, options.note),
+      },
+      Boolean(options.json),
+    );
+  });
+
+storeManage
+  .command('reconcile')
+  .description('Scan pasted text for order ids, mark matches confirmed locally, and report misses.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--input <path>', 'Path to pasted text, or "-" for stdin.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
+    const payload = await readTextInput(options.input);
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const fetched = await withStoreRelayClient((relayClient) => fetchOrdersForSeller({
+        storeUrl: store.url,
+        sellerSecret: options.secret,
+        sellerSigner: signer,
+        relayList: getRelayList(options.relay),
+      }, relayClient));
+      const result = await reconcileStoreOrders(
+        fetched.context.lookupHash,
+        payload,
+        fetched.orders.map((entry) => entry.order.orderId),
+      );
+      printOutput(
+        {
+          storeId: fetched.context.lookupHash,
+          matched: result.matched,
+          missing: result.missing,
+          state: result.record,
+        },
         Boolean(options.json),
       );
     } finally {

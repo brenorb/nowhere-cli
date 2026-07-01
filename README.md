@@ -91,6 +91,7 @@ Those modules are covered with e2e tests against the local mock relay in `tests/
 The CLI now exposes the main relay-backed workflows directly:
 
 - `store order`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `store status fetch`
+- `store manage state`, `store manage status`, `store manage confirm`, `store manage unconfirm`, `store manage hide`, `store manage unhide`, `store manage note`, `store manage reconcile`
 - `store checkout quote`, `store checkout begin`
 - `fundraiser donate methods`, `fundraiser donate invoice`
 - `message tip methods`, `message tip invoice`
@@ -109,6 +110,8 @@ Any runtime command that opens a store, petition, fundraiser, message, or forum 
 Encrypted fragments are accepted as normal positional arguments even when the base64url payload begins with `-`, so agents do not need to prepend `--` manually when opening encrypted store, petition, fundraiser, message, or forum links.
 
 `store order` accepts the same human-facing totals the website computes in major units and converts them to the wire-format cent fields before publishing. `store orders` also accepts repeated `--order-id <id>` values for targeted lookups, and `store verify` can validate a receipt, encrypted order event, or plaintext order JSON against the store's shipping, discount, and historical-rate rules.
+
+`store manage *` mirrors the website's seller-side local bookkeeping: attach statuses, payment confirmations, hidden flags, private notes, and pasted-text reconciliation to fetched order ids. That state is persisted under `XDG_CONFIG_HOME/nowhere-cli/store-manage.json`, `store orders --json` includes the current local overlay for each returned order, and `store orders --csv` exports the same `Status` and `Confirmed` overlay columns alongside the order data.
 
 `store checkout quote` mirrors the website's preflight: it calculates subtotal, shipping, discount, total, buyer-field requirements, allowed/excluded countries, payment-method availability, and inventory gating from the current encrypted status payload when tag `k` is enabled. `store checkout begin` then publishes the order and returns either a Lightning invoice or manual payment instructions, depending on the chosen method.
 
