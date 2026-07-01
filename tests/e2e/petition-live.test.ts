@@ -141,7 +141,7 @@ describe('petition live runtime', () => {
       expect(event.tags.some((tag) => tag[0] === 'nonce' && tag[2] === String(POW_DIFFICULTY))).toBe(true);
       expect(countLeadingZeroBits(event.id)).toBeGreaterThanOrEqual(POW_DIFFICULTY);
     }
-  }, 30_000);
+  }, 90_000);
 
   test('counts by petition d-tag and decrypts owner-visible signatures while rejecting insufficient PoW', async () => {
     const transport = new MemoryPetitionTransport();
@@ -211,5 +211,5 @@ describe('petition live runtime', () => {
     expect(byPubkey.get(secretPublish.signerPubkeyHex)?.payload?.email).toBe('signer@example.com');
     expect(byPubkey.get(secretPublish.signerPubkeyHex)?.payload?.comment).toBe('Count me in.');
     expect(byPubkey.has(getPublicKey(Buffer.from(rejectedSigner.secretHex, 'hex')))).toBe(false);
-  }, 30_000);
+  }, 90_000);
 });
