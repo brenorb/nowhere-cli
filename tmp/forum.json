@@ -1,0 +1,17 @@
+{
+  "pubkey": "npub1p4xdd2wpjdwy33quyx4gpa6395pd64x0hsnyuxe855arvvv55deq938rr5",
+  "name": "Safe House",
+  "description": "Forum page for testing posts, torrents, chat, rooms, and voice signaling.",
+  "image": "https://example.com/forum.jpg",
+  "tags": [
+    { "key": "i", "value": "1" },
+    { "key": "H", "value": "0" },
+    { "key": "V", "value": null },
+    { "key": "b", "value": null },
+    { "key": "F", "value": null },
+    { "key": "1", "value": "wss://relay.damus.io" },
+    { "key": "O", "value": "Ops\\pLogistics" },
+    { "key": "q", "value": "Docs|Audio" },
+    { "key": "h", "value": "No malware. No dox." }
+  ]
+}

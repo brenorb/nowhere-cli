@@ -1,0 +1,7 @@
+{
+  "name": "July Release",
+  "description": "Private pre-release drop for testers.",
+  "tags": [
+    { "key": "t", "value": "release" }
+  ]
+}
