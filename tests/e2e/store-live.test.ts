@@ -27,6 +27,8 @@ afterEach(() => {
 class MemoryRelayClient implements StoreRelayClient {
   private readonly eventsByRelay = new Map<string, Event[]>();
 
+  constructor(private readonly maxPerQuery?: number) {}
+
   async publish(event: Event, relays: string[]): Promise<void> {
     for (const relay of relays) {
       const bucket = this.eventsByRelay.get(relay) ?? [];
@@ -73,11 +75,11 @@ class MemoryRelayClient implements StoreRelayClient {
       return right.id.localeCompare(left.id);
     });
 
-    if (filter.limit !== undefined) {
-      return events.slice(0, filter.limit);
-    }
-
-    return events;
+    const limit = Math.min(
+      filter.limit ?? Number.POSITIVE_INFINITY,
+      this.maxPerQuery ?? Number.POSITIVE_INFINITY,
+    );
+    return Number.isFinite(limit) ? events.slice(0, limit) : events;
   }
 }
 
@@ -337,6 +339,57 @@ describe('store-live runtime', () => {
     expect(fetched.orders).toHaveLength(1);
     expect(fetched.orders[0]?.order.orderId).toBe(first.order.orderId);
     expect(fetched.orders[0]?.order.buyer.name).toBe('Alice');
+  });
+
+  test('paginates seller order history when relay queries are capped', async () => {
+    const relayClient = new MemoryRelayClient(2);
+    const seller = generateSecretMaterial();
+    const storeUrl = buildStoreUrl(seller.nowherePubkey, 'Paged Market');
+    const orderRelays = ['wss://orders.example'];
+    const publishedIds: string[] = [];
+    const nowSpy = vi.spyOn(Date, 'now');
+
+    for (let index = 0; index < 5; index += 1) {
+      nowSpy.mockReturnValue(1_720_000_000_000 + (index * 1_000));
+      const published = await publishOrderReceipt(
+        {
+          storeUrl,
+          relayList: orderRelays,
+          items: [{ i: 0, qty: 1 }],
+          subtotal: 1000 + index,
+          shipping: 0,
+          total: 1000 + index,
+          buyer: { name: `Buyer ${index}` },
+          timestamp: 1_720_000_000 + index,
+        },
+        relayClient,
+      );
+      publishedIds.push(published.order.orderId);
+    }
+    nowSpy.mockRestore();
+
+    const fetched = await fetchOrdersForSeller(
+      {
+        storeUrl,
+        sellerSecret: seller.secretHex,
+        relayList: orderRelays,
+      },
+      relayClient,
+    );
+    expect(fetched.orders).toHaveLength(5);
+    expect(fetched.orders.map((entry) => entry.order.orderId).sort()).toEqual([...publishedIds].sort());
+
+    const byIds = await fetchOrdersByIds(
+      {
+        storeUrl,
+        sellerSecret: seller.secretHex,
+        relayList: orderRelays,
+        orderIds: publishedIds,
+      },
+      relayClient,
+    );
+    expect(byIds.orders).toHaveLength(5);
+    expect(byIds.orders.map((entry) => entry.order.orderId).sort()).toEqual([...publishedIds].sort());
   });
 
   test('verifies receipt payloads against the store with historical rate overrides', async () => {
