@@ -1,0 +1,28 @@
+{
+  "name": "nowhere-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "nowhere": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@nowhere/codec": "file:../source-nowhere/nowhere/packages/codec",
+    "commander": "^14.0.0",
+    "nostr-tools": "^2.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
