@@ -1,0 +1,9 @@
+{
+  "name": "Legal Defense Fund",
+  "description": "Fundraiser page for testing builder and donation helper flows.",
+  "image": "https://example.com/fundraiser.jpg",
+  "tags": [
+    { "key": "T", "value": "HRF" },
+    { "key": "l", "value": "lightning" }
+  ]
+}

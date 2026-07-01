@@ -1,0 +1,7 @@
+{
+  "name": "Stencil",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 120\"><rect width=\"120\" height=\"120\" fill=\"black\"/><circle cx=\"60\" cy=\"60\" r=\"38\" fill=\"white\"/></svg>",
+  "tags": [
+    { "key": "T", "value": "g" }
+  ]
+}

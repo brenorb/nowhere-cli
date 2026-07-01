@@ -1,0 +1,9 @@
+{
+  "name": "Underground Gathering",
+  "description": "Poster-style event page for testing the event builder.",
+  "image": "https://example.com/event.jpg",
+  "tags": [
+    { "key": "T", "value": "g" },
+    { "key": "o", "value": "Breno" }
+  ]
+}
