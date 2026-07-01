@@ -1,0 +1,9 @@
+{
+  "name": "Alice",
+  "description": "Status update from the field.",
+  "image": "https://example.com/message.jpg",
+  "tags": [
+    { "key": "t", "value": "Dispatch" },
+    { "key": "l", "value": "lightning" }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "pubkey": "npub1p4xdd2wpjdwy33quyx4gpa6395pd64x0hsnyuxe855arvvv55deq938rr5",
+  "name": "Freedom Market",
+  "description": "Sample store for testing checkout, orders, and seller flows.",
+  "image": "https://example.com/store.jpg",
+  "tags": [
+    { "key": "1", "value": "wss://relay.damus.io" },
+    { "key": "2", "value": "wss://nos.lol" },
+    { "key": "$", "value": "USD" },
+    { "key": "k", "value": "1" },
+    { "key": "s", "value": "500" }
+  ],
+  "items": [
+    {
+      "name": "Sticker Pack",
+      "price": 7.5,
+      "description": "Three matte vinyl stickers.",
+      "image": "https://example.com/stickers.jpg",
+      "tags": [
+        { "key": "f", "value": null }
+      ]
+    },
+    {
+      "name": "Zine",
+      "price": 12,
+      "description": "Printed field notes.",
+      "image": "https://example.com/zine.jpg",
+      "tags": []
+    }
+  ]
+}

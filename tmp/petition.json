@@ -1,0 +1,13 @@
+{
+  "pubkey": "npub1p4xdd2wpjdwy33quyx4gpa6395pd64x0hsnyuxe855arvvv55deq938rr5",
+  "name": "Keep the Channel Open",
+  "description": "Petition page for testing signing, counting, and owner review flows.",
+  "image": "https://example.com/petition.jpg",
+  "tags": [
+    { "key": "N", "value": null },
+    { "key": "R", "value": null },
+    { "key": "E", "value": null },
+    { "key": "c", "value": "US.CA" },
+    { "key": "1", "value": "wss://relay.damus.io" }
+  ]
+}
