@@ -632,6 +632,377 @@ describe('relay-backed CLI commands', () => {
     );
   });
 
+  test('encrypted runtime commands accept passwords across store, petition, fundraiser, message, and forum', { timeout: 90000 }, async () => {
+    const relay = await startMockRelay();
+    const storeOwner = generateSecretMaterial();
+    const petitionOwner = generateSecretMaterial();
+    const petitionSigner = generateSecretMaterial();
+    const forumOwner = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: storeOwner.npub,
+          name: 'Encrypted Store',
+          items: [{ name: 'Manual', price: 12, tags: [{ key: 'f', value: null }] }],
+          tags: [
+            { key: '1', value: relay.url },
+            { key: '2', value: relay.url },
+            { key: '$', value: 'USD' },
+            { key: 'k', value: null },
+            { key: 'l', value: 'tips@seller.test' },
+          ],
+        },
+        async (storePath) => {
+          const store = await cli(
+            'create',
+            'store',
+            '--input',
+            storePath,
+            '--sign-secret',
+            storeOwner.nsec,
+            '--encrypt-password',
+            'store-pass',
+            '--json',
+          );
+
+          await withJsonFile(
+            {
+              buyer: { name: 'Avery' },
+              items: [{ i: 0, qty: 1 }],
+              subtotal: 12,
+              shipping: 0,
+              total: 12,
+            },
+            async (orderPath) => {
+              const published = await cli(
+                'store',
+                'order',
+                store.fragment,
+                '--password',
+                'store-pass',
+                '--input',
+                orderPath,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(published.order.total).toBe(1200);
+            },
+          );
+
+          const fetched = await cli(
+            'store',
+            'orders',
+            store.fragment,
+            '--password',
+            'store-pass',
+            '--secret',
+            storeOwner.secretHex,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(fetched.orders).toHaveLength(1);
+          expect(fetched.orders[0]?.order.buyer.name).toBe('Avery');
+
+          await withJsonFile(
+            {
+              v: 1,
+              notice: 'Inventory live',
+              items: { '0': 3 },
+            },
+            async (statusPath) => {
+              await cli(
+                'store',
+                'status',
+                'publish',
+                store.fragment,
+                '--password',
+                'store-pass',
+                '--input',
+                statusPath,
+                '--secret',
+                storeOwner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const status = await cli(
+            'store',
+            'status',
+            'fetch',
+            store.fragment,
+            '--password',
+            'store-pass',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(status.payload.notice).toBe('Inventory live');
+
+          await withJsonFile(
+            {
+              items: [{ i: 0, qty: 1 }],
+            },
+            async (cartPath) => {
+              const quote = await cli(
+                'store',
+                'checkout',
+                'quote',
+                store.fragment,
+                '--password',
+                'store-pass',
+                '--cart',
+                cartPath,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(quote.total).toBe(12);
+              expect(quote.inventory.gate).toBe('ok');
+            },
+          );
+        },
+      );
+
+      await withJsonFile(
+        {
+          pubkey: petitionOwner.npub,
+          name: 'Encrypted Petition',
+          tags: [
+            { key: 'N', value: null },
+            { key: '1', value: relay.url },
+          ],
+        },
+        async (petitionPath) => {
+          const petition = await cli(
+            'create',
+            'petition',
+            '--input',
+            petitionPath,
+            '--sign-secret',
+            petitionOwner.nsec,
+            '--encrypt-password',
+            'petition-pass',
+            '--json',
+          );
+
+          await withJsonFile(
+            {
+              ts: Date.now(),
+              name: 'Casey',
+            },
+            async (signaturePath) => {
+              await cli(
+                'petition',
+                'sign',
+                petition.fragment,
+                '--password',
+                'petition-pass',
+                '--input',
+                signaturePath,
+                '--secret',
+                petitionSigner.nsec,
+                '--relay',
+                relay.url,
+                '--pow-difficulty',
+                '4',
+                '--json',
+              );
+            },
+          );
+
+          const count = await cli(
+            'petition',
+            'count',
+            petition.fragment,
+            '--password',
+            'petition-pass',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(count.count).toBe(1);
+
+          const signatures = await cli(
+            'petition',
+            'signatures',
+            petition.fragment,
+            '--password',
+            'petition-pass',
+            '--secret',
+            petitionOwner.secretHex,
+            '--relay',
+            relay.url,
+            '--pow-difficulty',
+            '4',
+            '--json',
+          );
+
+          expect(signatures.signatures).toHaveLength(1);
+          expect(signatures.signatures[0]?.payload.name).toBe('Casey');
+        },
+      );
+
+      await withJsonFile(
+        {
+          name: 'Encrypted Fund',
+          tags: [
+            { key: 'l', value: 'tips@seller.test,*PayPal:paypal.me/encrypted' },
+          ],
+        },
+        async (fundraiserPath) => {
+          const fundraiser = await cli(
+            'create',
+            'fundraiser',
+            '--input',
+            fundraiserPath,
+            '--encrypt-password',
+            'fund-pass',
+            '--json',
+          );
+
+          const methods = await cli(
+            'fundraiser',
+            'donate',
+            'methods',
+            fundraiser.fragment,
+            '--password',
+            'fund-pass',
+            '--json',
+          );
+
+          expect(methods.methods).toHaveLength(2);
+          expect(methods.methods[0]?.id).toBe('lightning');
+        },
+      );
+
+      await withJsonFile(
+        {
+          name: 'Encrypted Message',
+          description: 'Private tip jar.',
+          tags: [
+            { key: 'l', value: 'tips@seller.test,*PayPal:paypal.me/private-tip' },
+          ],
+        },
+        async (messagePath) => {
+          const message = await cli(
+            'create',
+            'message',
+            '--input',
+            messagePath,
+            '--encrypt-password',
+            'message-pass',
+            '--json',
+          );
+
+          const methods = await cli(
+            'message',
+            'tip',
+            'methods',
+            message.fragment,
+            '--password',
+            'message-pass',
+            '--json',
+          );
+
+          expect(methods.methods).toHaveLength(2);
+          expect(methods.methods[0]?.id).toBe('lightning');
+        },
+      );
+
+      await withJsonFile(
+        {
+          pubkey: forumOwner.npub,
+          name: 'Encrypted Forum',
+          tags: [
+            { key: '1', value: relay.url },
+            { key: 'W', value: '0' },
+          ],
+        },
+        async (forumPath) => {
+          const forum = await cli(
+            'create',
+            'forum',
+            '--input',
+            forumPath,
+            '--sign-secret',
+            forumOwner.nsec,
+            '--encrypt-password',
+            'forum-pass',
+            '--json',
+          );
+
+          await withJsonFile(
+            {
+              title: 'Encrypted thread',
+              body: 'Need-to-know only',
+            },
+            async (postPath) => {
+              await cli(
+                'forum',
+                'post',
+                forum.fragment,
+                '--password',
+                'forum-pass',
+                '--input',
+                postPath,
+                '--secret',
+                forumOwner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const posts = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--password',
+            'forum-pass',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(posts.posts).toHaveLength(1);
+          expect(posts.posts[0]?.payload.t).toBe('Encrypted thread');
+
+          const access = await cli(
+            'forum',
+            'wot',
+            'check',
+            forum.fragment,
+            '--password',
+            'forum-pass',
+            '--scope',
+            'post',
+            '--author',
+            forumOwner.pubkeyHex,
+            '--json',
+          );
+
+          expect(access.allowed).toBe(true);
+          expect(access.depth).toBe(0);
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
   test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();

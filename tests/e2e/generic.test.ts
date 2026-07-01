@@ -75,7 +75,7 @@ describe('generic CLI commands', () => {
     const encrypted = await cli('encrypt', fragment, '--password', 'correct horse battery staple', '--json');
     expect(encrypted.encryptedFragment).not.toBe(fragment);
 
-    const decrypted = await cli('decrypt', encrypted.encryptedFragment, '--password', 'correct horse battery staple', '--json');
+    const decrypted = await cli('decrypt', encrypted.encryptedUrl, '--password', 'correct horse battery staple', '--json');
     expect(decrypted.fragment).toBe(fragment);
   });
 
