@@ -70,3 +70,5 @@ Publish-style commands accept structured JSON via `--input <path>` or `--input -
 `store order` accepts the same human-facing totals the website computes in major units and converts them to the wire-format cent fields before publishing. `store orders` also accepts repeated `--order-id <id>` values for targeted lookups, and `store verify` can validate a receipt, encrypted order event, or plaintext order JSON against the store's shipping, discount, and historical-rate rules.
 
 `forum chat send` accepts `--session-secret` to advertise the stable session pubkey that the website uses for private chat routing. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for a given session secret.
+
+`petition sign` now enforces the petition's own required-field tags and country restrictions before it spends time encrypting, computing proof-of-work, and publishing.

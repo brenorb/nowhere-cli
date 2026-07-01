@@ -754,6 +754,7 @@ petition
       ),
       fragment,
       relays,
+      petitionTags: siteData.tags,
       secret: options.secret,
       powDifficulty: Number.parseInt(options.powDifficulty, 10),
       transport,
