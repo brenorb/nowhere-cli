@@ -9,7 +9,7 @@ import {
 } from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools/core';
-import { describeSecret, type SecretMaterial } from './keys.js';
+import { describeSecret, parseSecretKeyInput, type SecretMaterial } from './keys.js';
 import { fetchEvent, fetchEvents, getForumRelays, publishToRelays } from './relay.js';
 import { normalizeToFragment } from './fragments.js';
 
@@ -97,8 +97,9 @@ export interface ChatMessagePayload {
 export interface DecryptedChatMessage {
   eventId: string;
   payload: ChatMessagePayload;
-  channel: 'general' | 'room';
+  channel: 'general' | 'room' | 'private';
   roomName?: string;
+  peerPubkey?: string;
 }
 
 export interface DecryptedRoomAnnouncement {
@@ -175,6 +176,11 @@ function deriveRoomKeypair(forumPrivkey: Uint8Array, roomName: string, accessCod
     ...encoder.encode(accessCode),
   ]);
   const privkey = hmac(sha256, encoder.encode('nowhere-chat-room'), message);
+  return { privkey, pubkey: getPublicKey(privkey) };
+}
+
+function deriveSessionKeypair(secret: string) {
+  const privkey = parseSecretKeyInput(secret);
   return { privkey, pubkey: getPublicKey(privkey) };
 }
 
@@ -810,6 +816,46 @@ export async function publishGeneralChatMessage(options: {
   forumInput: string;
   message: string;
   secret?: string;
+  sessionSecret?: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const author = resolveAuthor(options.secret);
+  const sessionPubkey = options.sessionSecret ? deriveSessionKeypair(options.sessionSecret).pubkey : undefined;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const chatTag = deriveChatTag(context.forumPrivkey);
+  const wrappedContent = wrapContentForSigning(options.message);
+  const inner = finalizeEvent(
+    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
+    author.secretKey,
+  );
+  const payload: ChatMessagePayload = {
+    v: 1,
+    b: options.message,
+    p: author.pubkeyHex,
+    sp: sessionPubkey,
+    ts: timestamp,
+    sig: inner.sig,
+    w: wrappedContent,
+  };
+
+  const outerSecret = generateSecretKey();
+  const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
+  const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
+  const event = finalizeEvent(
+    { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
+    outerSecret,
+  );
+  await publishToRelays(event, context.relays);
+  return { event, chatTag };
+}
+
+export async function publishPrivateChatMessage(options: {
+  forumInput: string;
+  recipientSessionPubkey: string;
+  message: string;
+  secret?: string;
   relays?: string[];
   salt?: string;
 }) {
@@ -832,14 +878,54 @@ export async function publishGeneralChatMessage(options: {
   };
 
   const outerSecret = generateSecretKey();
-  const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
+  const conversationKey = getConversationKey(outerSecret, options.recipientSessionPubkey);
   const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
   const event = finalizeEvent(
     { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
   await publishToRelays(event, context.relays);
-  return { event, chatTag };
+  return { event, chatTag, recipientSessionPubkey: options.recipientSessionPubkey };
+}
+
+export async function listPrivateChatMessages(options: {
+  forumInput: string;
+  sessionSecret: string;
+  relays?: string[];
+  salt?: string;
+  peerPubkey?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const chatTag = deriveChatTag(context.forumPrivkey);
+  const { privkey: sessionPrivkey } = deriveSessionKeypair(options.sessionSecret);
+  const events = await fetchEvents({ kinds: [21423], '#t': [chatTag] }, context.relays);
+  return events
+    .map((event) => {
+      try {
+        const conversationKey = getConversationKey(sessionPrivkey, event.pubkey);
+        const decrypted = nip44Decrypt(event.content, conversationKey);
+        const payload = JSON.parse(decrypted) as ChatMessagePayload;
+        if (payload.v !== 1 || typeof payload.b !== 'string' || !payload.p || !payload.sig || !payload.w) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
+          return null;
+        }
+        if (options.peerPubkey && payload.p !== options.peerPubkey) {
+          return null;
+        }
+        return {
+          eventId: event.id,
+          payload,
+          channel: 'private' as const,
+          peerPubkey: payload.p,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry) => entry !== null)
+    .sort((left, right) => right.payload.ts - left.payload.ts);
 }
 
 export async function listGeneralChatMessages(options: {
