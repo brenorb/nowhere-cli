@@ -17,6 +17,14 @@ async function cli(...args: string[]) {
   return JSON.parse(result.stdout);
 }
 
+async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+  });
+  return JSON.parse(result.stdout);
+}
+
 async function cliText(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
   return result.stdout.trim();
@@ -49,6 +57,15 @@ async function withBinaryFile(name: string, bytes: Uint8Array, fn: (path: string
   await writeFile(file, bytes);
   try {
     await fn(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withTempDir(prefix: string, fn: (path: string) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  try {
+    await fn(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1430,6 +1447,133 @@ describe('relay-backed CLI commands', () => {
         },
       );
     } finally {
+      await relay.close();
+    }
+  });
+
+  test('forum CLI reuses a persisted anonymous session for posts, chat routing, and private inbox decryption', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Anonymous Forum',
+          description: 'CLI parity test',
+          tags: [
+            { key: 'i', value: '1' },
+            { key: 'H', value: '0' },
+            { key: 'V', value: null },
+            { key: '1', value: relay.url },
+          ],
+        },
+        async (forumPath) => {
+          const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+
+          await withTempDir('nowhere-cli-session-', async (configHome) => {
+            const env = { XDG_CONFIG_HOME: configHome };
+
+            await withJsonFile(
+              { title: 'Anonymous checkpoint', body: 'No signer provided' },
+              async (postPath) => {
+                const post = await cliWithEnv(
+                  env,
+                  'forum',
+                  'post',
+                  forum.fragment,
+                  '--input',
+                  postPath,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+
+                await withJsonFile(
+                  { message: 'Anonymous chat online' },
+                  async (chatPath) => {
+                    await cliWithEnv(
+                      env,
+                      'forum',
+                      'chat',
+                      'send',
+                      forum.fragment,
+                      '--input',
+                      chatPath,
+                      '--relay',
+                      relay.url,
+                      '--json',
+                    );
+                  },
+                );
+
+                const posts = await cliWithEnv(
+                  env,
+                  'forum',
+                  'posts',
+                  forum.fragment,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(posts.posts).toHaveLength(1);
+                expect(posts.posts[0]?.payload.p).toBe(post.authorPubkeyHex);
+
+                const chat = await cliWithEnv(
+                  env,
+                  'forum',
+                  'chat',
+                  'list',
+                  forum.fragment,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                const anonymousMessage = chat.messages.find((entry: { payload: { b: string } }) => entry.payload.b === 'Anonymous chat online');
+                expect(anonymousMessage?.payload.p).toBe(post.authorPubkeyHex);
+                expect(anonymousMessage?.payload.sp).toMatch(/^[0-9a-f]{64}$/);
+
+                await withJsonFile(
+                  { message: 'Private follow-up' },
+                  async (privatePath) => {
+                    await cli(
+                      'forum',
+                      'private',
+                      'send',
+                      forum.fragment,
+                      '--recipient-session-pubkey',
+                      anonymousMessage.payload.sp,
+                      '--input',
+                      privatePath,
+                      '--secret',
+                      owner.secretHex,
+                      '--relay',
+                      relay.url,
+                      '--json',
+                    );
+                  },
+                );
+
+                const inbox = await cliWithEnv(
+                  env,
+                  'forum',
+                  'private',
+                  'list',
+                  forum.fragment,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(inbox.messages).toHaveLength(1);
+                expect(inbox.messages[0]?.payload.b).toBe('Private follow-up');
+                expect(inbox.messages[0]?.peerPubkey).toBe(owner.pubkeyHex);
+              },
+            );
+          });
+        },
+      );
+    } finally {
+      destroyPool();
       await relay.close();
     }
   });

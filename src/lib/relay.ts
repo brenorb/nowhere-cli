@@ -95,6 +95,11 @@ export async function publishToRelays(event: Event, relays: string[]): Promise<v
   }
 }
 
+export async function publishToRelaysBestEffort(event: Event, relays: string[]): Promise<void> {
+  const dedupedRelays = [...new Set(relays)];
+  await Promise.allSettled(getPool().publish(dedupedRelays, event));
+}
+
 function getRelaysFromTag(tags: Tag[], key: string): string[] {
   const tag = tags.find((entry) => entry.key === key);
   if (!tag?.value) {

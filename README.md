@@ -99,7 +99,9 @@ Any runtime command that opens a store, petition, fundraiser, message, or forum 
 
 `store orders` now also accepts `--csv` for the same export-style workflow the manage dashboard exposes.
 
-`forum chat send` accepts `--session-secret` to advertise the stable session pubkey that the website uses for private chat routing. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for a given session secret.
+Anonymous forum posts, replies, torrent submissions, room flows, and general chat now reuse one persisted forum session secret under `XDG_CONFIG_HOME/nowhere-cli/forum-session.json` by default, which matches the website's stable in-session anonymous identity behavior. Set `NOWHERE_FORUM_SESSION_SECRET` or pass `--session-secret` where supported to override that identity explicitly.
+
+`forum chat send` accepts `--session-secret` to override the advertised stable session pubkey that the website uses for private chat routing. Without it, the CLI advertises the persisted forum session automatically. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for either the persisted session or an explicit `--session-secret`.
 
 `forum posts`, `forum replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
 
