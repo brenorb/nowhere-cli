@@ -11,6 +11,7 @@ Current scope in this first slice:
 - create all eight Nowhere site types from structured JSON
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
+- relay-backed CLI commands for store management, petition signing/owner review, and forum posting
 
 Commands currently optimized for agent use expose `--json` output.
 
@@ -33,6 +34,9 @@ pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse bat
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
 pnpm cli update 'https://hostednowhere.com/s#...' --patch ./patch.json --json
+pnpm cli store order 'https://hostednowhere.com/s#...' --input ./order.json --relay ws://127.0.0.1:7000 --json
+pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret nsec1... --json
+pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret nsec1... --json
 ```
 
 ## Builder Input
@@ -51,4 +55,14 @@ The CLI now includes upstream-compatible runtime modules for the parts of Nowher
 - `src/lib/petition-live.ts` publishes petition signatures with the same `kind`, `d` tag, PoW, and owner-only decryption flow as the website.
 - `src/lib/forum-live.ts` publishes and reads forum posts, replies, torrent entries, and general chat messages.
 
-Those modules are covered with e2e tests against the local mock relay in `tests/support/mockRelay.ts`. The next slice wires them into top-level CLI commands.
+Those modules are covered with e2e tests against the local mock relay in `tests/support/mockRelay.ts`, and the command layer in `src/cli.ts` now wraps them for agent-facing automation.
+
+## Relay Commands
+
+The CLI now exposes the main relay-backed workflows directly:
+
+- `store order`, `store receipt decrypt`, `store orders`, `store status publish`, `store status fetch`
+- `petition sign`, `petition count`, `petition signatures`
+- `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrents`, `forum chat send`, `forum chat list`
+
+Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it.
