@@ -13,6 +13,7 @@ Current scope in this first slice:
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
 - relay-backed CLI commands for store management, petition signing/owner review, and full forum activity management
+- forum voice signaling publish/list flows that mirror the website's Nostr signaling layer for general, room, and private channels
 - forum torrent authoring from real `.torrent` files, including duplicate preflight checks and publish-time normalization
 - store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
@@ -97,6 +98,7 @@ The CLI now exposes the main relay-backed workflows directly:
 - `message tip methods`, `message tip invoice`
 - `petition sign`, `petition count`, `petition signatures`
 - `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrent reply`, `forum torrent replies`, `forum torrents`, `forum room announce`, `forum room announcements`, `forum room send`, `forum room list`, `forum chat send`, `forum chat list`, `forum private send`, `forum private list`, `forum wot check`
+- `forum voice send`, `forum voice list`
 - `forum torrent parse` reads a real `.torrent` file and extracts the infohash, inferred title, file list, and deduplicated tracker set the same way the website does.
 - `forum torrent check` runs the website-style submission preflight against a forum: torrent feature enabled via `b`, normalized category path, fixed-root enforcement via `F`/`q`, and duplicate detection by infohash then case-insensitive title.
 - `forum torrent publish` now accepts either `--input <json>` for raw agent-authored payloads or `--torrent-file <path>` plus `--category`, with optional `--title`, `--description`, repeated `--tracker`, and repeated `--ref`.
@@ -121,7 +123,11 @@ Anonymous forum posts, replies, torrent submissions, room flows, and general cha
 
 `forum chat send` accepts `--session-secret` to override the advertised stable session pubkey that the website uses for private chat routing. Without it, the CLI advertises the persisted forum session automatically. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for either the persisted session or an explicit `--session-secret`.
 
-`forum posts`, `forum replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
+`forum voice send` and `forum voice list` expose the website's relay-side voice signaling layer for agents. They publish and inspect `join`, `leave`, `offer`, `answer`, `ice`, and `mute` signals across the `general`, `room`, and `private` channels, including signed join proofs and persisted session identities.
+
+The forum list surfaces also support CLI-native follow mode: pass `--watch` to keep polling until interrupted, or `--watch-seconds <n>` to stream newline-delimited JSON records for a bounded programmatic window. That parity now covers posts, replies, torrent replies, torrents, room announcements, room chat, general chat, private chat, and voice signals.
+
+`forum posts`, `forum replies`, `forum torrent replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum posts` also supports `--search`, `--date`, `--type`, and `--sort`, while `forum torrents` supports `--search`, `--date`, `--author`, `--category`, `--min-bytes`, `--max-bytes`, `--sort`, and `--order` for CLI-native browse parity. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
 
 `petition sign` now enforces the petition's own required-field tags and country restrictions before it spends time encrypting, computing proof-of-work, and publishing.
 
