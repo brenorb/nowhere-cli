@@ -42,6 +42,12 @@ import {
   publishRoomAnnouncement,
   publishRoomChatMessage,
 } from './lib/forum-live.js';
+import {
+  buildForumWotSet,
+  checkForumWotAccess,
+  getForumModerationConfig,
+  passesForumModeration,
+} from './lib/forum-moderation.js';
 import { beginStoreCheckout, quoteStoreCheckout } from './lib/store-checkout.js';
 import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
@@ -407,6 +413,24 @@ function readOrderItems(value: Record<string, unknown>, key = 'items'): Array<{ 
       v: readString(item, 'v', false),
     };
   });
+}
+
+async function filterModeratedEntries<T>(options: {
+  forumInput: string;
+  scope: 'post' | 'reply' | 'chat' | 'torrent';
+  entries: T[];
+  profileRelays?: string[];
+  getAuthor: (entry: T) => string;
+  getText: (entry: T) => string;
+}): Promise<T[]> {
+  const config = await getForumModerationConfig(options.forumInput, options.scope, options.profileRelays);
+  const wotSet = await buildForumWotSet(config);
+  return options.entries.filter((entry) => passesForumModeration(
+    options.getAuthor(entry),
+    options.getText(entry),
+    wotSet,
+    config.bannedWords,
+  ));
 }
 
 const program = new Command();
@@ -997,6 +1021,27 @@ fundraiserDonate
   });
 
 const forum = program.command('forum').description('Manage forum relay flows.');
+const forumWot = forum.command('wot').description('Inspect forum web-of-trust gates.');
+
+forumWot
+  .command('check')
+  .description('Check whether an author is allowed by the forum WoT settings for a given scope.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--scope <scope>', 'Moderation scope: post, reply, chat, or torrent.')
+  .requiredOption('--author <pubkey>', 'Author pubkey as hex or npub.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    printOutput(
+      await withForumPoolCleanup(() => checkForumWotAccess({
+        forumInput,
+        scope: options.scope,
+        author: options.author,
+        profileRelays: getRelayList(options.profileRelay),
+      })),
+      Boolean(options.json),
+    );
+  });
 
 forum
   .command('post')
@@ -1029,18 +1074,30 @@ forum
   .description('List forum posts, optionally scoped to a topic.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--topic <topic>', 'Only list posts for this topic.')
+  .option('--moderated', 'Filter out entries blocked by forum WoT or banned-word rules.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const posts = await withForumPoolCleanup(() => listForumPosts({
+      forumInput,
+      topic: options.topic,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
     printOutput(
       {
-        posts: await withForumPoolCleanup(() => listForumPosts({
-          forumInput,
-          topic: options.topic,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        posts: options.moderated
+          ? await withForumPoolCleanup(() => filterModeratedEntries({
+            forumInput,
+            scope: 'post',
+            entries: posts,
+            profileRelays: getRelayList(options.profileRelay),
+            getAuthor: (entry) => entry.payload.p,
+            getText: (entry) => [entry.payload.t, entry.payload.b, entry.payload.l].filter(Boolean).join('\n'),
+          }))
+          : posts,
       },
       Boolean(options.json),
     );
@@ -1077,18 +1134,30 @@ forum
   .description('List replies for a forum post.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--post-event <id>', 'Target post event id.')
+  .option('--moderated', 'Filter out replies blocked by forum WoT or banned-word rules.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const replies = await withForumPoolCleanup(() => listForumReplies({
+      forumInput,
+      postEventId: options.postEvent,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
     printOutput(
       {
-        replies: await withForumPoolCleanup(() => listForumReplies({
-          forumInput,
-          postEventId: options.postEvent,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        replies: options.moderated
+          ? await withForumPoolCleanup(() => filterModeratedEntries({
+            forumInput,
+            scope: 'reply',
+            entries: replies,
+            profileRelays: getRelayList(options.profileRelay),
+            getAuthor: (entry) => entry.payload.p,
+            getText: (entry) => entry.payload.b,
+          }))
+          : replies,
       },
       Boolean(options.json),
     );
@@ -1219,17 +1288,29 @@ forum
   .command('torrents')
   .description('List published forum torrent entries.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--moderated', 'Filter out torrents blocked by forum WoT or banned-word rules.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const torrents = await withForumPoolCleanup(() => listForumTorrents({
+      forumInput,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
     printOutput(
       {
-        torrents: await withForumPoolCleanup(() => listForumTorrents({
-          forumInput,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        torrents: options.moderated
+          ? await withForumPoolCleanup(() => filterModeratedEntries({
+            forumInput,
+            scope: 'torrent',
+            entries: torrents,
+            profileRelays: getRelayList(options.profileRelay),
+            getAuthor: (entry) => entry.authorPubkey,
+            getText: (entry) => entry.torrentData.title,
+          }))
+          : torrents,
       },
       Boolean(options.json),
     );
@@ -1317,17 +1398,29 @@ forumChat
   .command('list')
   .description('List general forum chat messages.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--moderated', 'Filter out chat messages blocked by forum WoT or banned-word rules.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const messages = await withForumPoolCleanup(() => listGeneralChatMessages({
+      forumInput,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
     printOutput(
       {
-        messages: await withForumPoolCleanup(() => listGeneralChatMessages({
-          forumInput,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        messages: options.moderated
+          ? await withForumPoolCleanup(() => filterModeratedEntries({
+            forumInput,
+            scope: 'chat',
+            entries: messages,
+            profileRelays: getRelayList(options.profileRelay),
+            getAuthor: (entry) => entry.payload.p,
+            getText: (entry) => entry.payload.b,
+          }))
+          : messages,
       },
       Boolean(options.json),
     );
@@ -1410,19 +1503,31 @@ forumRoom
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--room-name <name>', 'Room name.')
   .requiredOption('--access-code <code>', 'Room access code.')
+  .option('--moderated', 'Filter out room chat messages blocked by forum WoT or banned-word rules.')
+  .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const messages = await withForumPoolCleanup(() => listRoomChatMessages({
+      forumInput,
+      roomName: options.roomName,
+      accessCode: options.accessCode,
+      salt: options.salt,
+      relays: getRelayList(options.relay),
+    }));
     printOutput(
       {
-        messages: await withForumPoolCleanup(() => listRoomChatMessages({
-          forumInput,
-          roomName: options.roomName,
-          accessCode: options.accessCode,
-          salt: options.salt,
-          relays: getRelayList(options.relay),
-        })),
+        messages: options.moderated
+          ? await withForumPoolCleanup(() => filterModeratedEntries({
+            forumInput,
+            scope: 'chat',
+            entries: messages,
+            profileRelays: getRelayList(options.profileRelay),
+            getAuthor: (entry) => entry.payload.p,
+            getText: (entry) => entry.payload.b,
+          }))
+          : messages,
       },
       Boolean(options.json),
     );
