@@ -91,6 +91,8 @@ The CLI now exposes the main relay-backed workflows directly:
 
 Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it. Forum commands also accept `--salt <value>` anywhere the website derives an alternate salted forum keyspace.
 
+Any runtime command that opens a store, petition, fundraiser, message, or forum now also accepts `--password <password>` so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site.
+
 `store order` accepts the same human-facing totals the website computes in major units and converts them to the wire-format cent fields before publishing. `store orders` also accepts repeated `--order-id <id>` values for targeted lookups, and `store verify` can validate a receipt, encrypted order event, or plaintext order JSON against the store's shipping, discount, and historical-rate rules.
 
 `store checkout quote` mirrors the website's preflight: it calculates subtotal, shipping, discount, total, buyer-field requirements, allowed/excluded countries, payment-method availability, and inventory gating from the current encrypted status payload when tag `k` is enabled. `store checkout begin` then publishes the order and returns either a Lightning invoice or manual payment instructions, depending on the chosen method.

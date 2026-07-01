@@ -4,7 +4,7 @@ import { Filter } from 'nostr-tools/filter';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
 import { SimplePool } from 'nostr-tools/pool';
 import { type Event, finalizeEvent, generateSecretKey, getPublicKey, verifyEvent, type VerifiedEvent } from 'nostr-tools/pure';
-import { normalizeToFragment, resolveSiteInput } from './fragments.js';
+import { resolveSiteInput } from './fragments.js';
 import { parseSecretKeyInput } from './keys.js';
 
 export const NOWHERE_APPLICATION_KIND = 30078;
@@ -561,13 +561,16 @@ export function generateOrderId(data: string): string {
 }
 
 export async function resolveStoreContext(storeUrl: string): Promise<StoreLiveContext> {
-  const { fragment } = normalizeToFragment(storeUrl);
   const resolved = await resolveSiteInput(storeUrl);
   if (!resolved.siteData || resolved.siteData.siteType !== 'store') {
     throw new Error('Expected a Nowhere store URL or fragment.');
   }
   if (!resolved.siteData.pubkey) {
     throw new Error('Store is missing a seller pubkey.');
+  }
+  const fragment = resolved.unsignedFragment ?? resolved.decodedFragment;
+  if (!fragment) {
+    throw new Error('Could not resolve the store fragment.');
   }
 
   return {

@@ -1,4 +1,4 @@
-import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes } from '@nowhere/codec';
+import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes, type SiteData } from '@nowhere/codec';
 import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { SimplePool } from 'nostr-tools/pool';
@@ -208,6 +208,35 @@ async function withForumPoolCleanup<T>(fn: () => Promise<T>): Promise<T> {
   } finally {
     destroyPool();
   }
+}
+
+async function resolveRuntimeSiteInput<TExpected extends 'store' | 'petition' | 'fundraiser' | 'message' | 'discussion'>(
+  input: string,
+  expectedType: TExpected,
+  password?: string,
+): Promise<{
+  resolved: Awaited<ReturnType<typeof resolveSiteInput>>;
+  siteData: Extract<SiteData, { siteType: TExpected }>;
+  fragment: string;
+  url: string;
+}> {
+  const resolved = await resolveSiteInput(input, password);
+  const label = expectedType === 'discussion' ? 'forum' : expectedType;
+  if (!resolved.siteData || resolved.siteData.siteType !== expectedType) {
+    fail(`Expected a Nowhere ${label} URL or fragment.`);
+  }
+
+  const fragment = resolved.unsignedFragment ?? resolved.decodedFragment;
+  if (!fragment) {
+    fail(`Could not resolve the ${label} fragment.`);
+  }
+
+  return {
+    resolved,
+    siteData: resolved.siteData as Extract<SiteData, { siteType: TExpected }>,
+    fragment,
+    url: fragmentToUrl(fragment),
+  };
 }
 
 function collectOption(value: string, previous: string[]): string[] {
@@ -671,12 +700,14 @@ store
   .description('Publish an encrypted Nowhere store order and return the seller receipt.')
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--input <path>', 'Path to a JSON order payload, or "-" for stdin.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON order payload.');
     const published = await withStoreRelayClient((relayClient) => publishOrderReceipt({
-      storeUrl: storeInput,
+      storeUrl: store.url,
       buyer: readStringRecord(payload, 'buyer') ?? {},
       items: (readArray(payload, 'items') ?? []).map((item, index) => {
         const entry = requireObject(item, `Expected "items[${index}]" to be an object.`);
@@ -739,6 +770,7 @@ store
   .description('Fetch and decrypt seller-visible orders for a store.')
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--order-id <id>', 'Only fetch specific order ids. Repeat to pass more than one.', collectOption, [])
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--since <unix>', 'Only fetch orders at or after this Unix timestamp.')
@@ -748,20 +780,17 @@ store
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
     const requestedOrderIds = getRelayList(options.orderId);
-    const resolved = await resolveSiteInput(storeInput);
-    if (!resolved.siteData || resolved.siteData.siteType !== 'store') {
-      fail('Expected a Nowhere store URL or fragment.');
-    }
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const fetched = await withStoreRelayClient((relayClient) => (
       requestedOrderIds && requestedOrderIds.length > 0
         ? fetchOrdersByIds({
-            storeUrl: storeInput,
+            storeUrl: store.url,
             sellerSecret: options.secret,
             orderIds: requestedOrderIds,
             relayList: getRelayList(options.relay),
           }, relayClient)
         : fetchOrdersForSeller({
-            storeUrl: storeInput,
+            storeUrl: store.url,
             sellerSecret: options.secret,
             relayList: getRelayList(options.relay),
             since: options.since ? Number.parseInt(options.since, 10) : undefined,
@@ -771,7 +800,7 @@ store
     ));
 
     if (options.csv) {
-      printTextOutput(formatStoreOrdersCsv(fetched, resolved.siteData));
+      printTextOutput(formatStoreOrdersCsv(fetched, store.siteData));
       return;
     }
     printOutput(fetched, Boolean(options.json));
@@ -783,15 +812,17 @@ store
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--input <path>', 'Path to the receipt, order event, or raw order JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Seller nsec or 64-char hex secret. Required for receipts or encrypted order events.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--received-sats <count>', 'Expected sats received in your wallet for sats-based payments.')
   .option('--store-sats-per-unit <value>', 'Override the historical sats-per-unit used for the store currency.')
   .option('--payment-sats-per-unit <value>', 'Override the historical sats-per-unit used for the payment currency.')
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const payload = await readJsonInput(options.input);
     printOutput(
       await verifyStoreOrderPayload({
-        storeUrl: storeInput,
+        storeUrl: store.url,
         payload,
         sellerSecret: options.secret,
         receivedSats: options.receivedSats ? Number.parseInt(options.receivedSats, 10) : undefined,
@@ -814,13 +845,15 @@ storeCheckout
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--cart <path>', 'Path to the checkout cart JSON, or "-" for stdin.')
   .option('--buyer-country <code>', 'Optional buyer country used for shipping and country validation.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const cart = await readObjectInput(options.cart, 'Expected a JSON checkout cart payload.');
     printOutput(
       await withStoreRelayClient((relayClient) => quoteStoreCheckout({
-        storeUrl: storeInput,
+        storeUrl: store.url,
         items: readOrderItems(cart),
         buyerCountry: options.buyerCountry,
         relayList: getRelayList(options.relay),
@@ -836,14 +869,16 @@ storeCheckout
   .requiredOption('--cart <path>', 'Path to the checkout cart JSON, or "-" for stdin.')
   .requiredOption('--buyer <path>', 'Path to the buyer JSON, or "-" for stdin.')
   .option('--method <id>', 'Payment method id, such as bitcoin, payid, or custom_0.', 'bitcoin')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const cart = await readObjectInput(options.cart, 'Expected a JSON checkout cart payload.');
     const buyer = await readObjectInput(options.buyer, 'Expected a JSON buyer payload.');
     printOutput(
       await withStoreRelayClient((relayClient) => beginStoreCheckout({
-        storeUrl: storeInput,
+        storeUrl: store.url,
         items: readOrderItems(cart),
         buyer: Object.fromEntries(Object.entries(buyer).map(([key, value]) => [key, String(value)])),
         methodId: options.method,
@@ -861,12 +896,14 @@ storeStatus
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--input <path>', 'Path to the status JSON, or "-" for stdin.')
   .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON status payload.');
     const published = await withStoreRelayClient((relayClient) => publishStoreStatus({
-      storeUrl: storeInput,
+      storeUrl: store.url,
       sellerSecret: options.secret,
       relayList: getRelayList(options.relay),
       payload: {
@@ -893,12 +930,14 @@ storeStatus
   .command('fetch')
   .description('Fetch the current encrypted store status from relays.')
   .argument('<store>', 'Store fragment or full store URL.')
+  .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     printOutput(
       await withStoreRelayClient((relayClient) => fetchCurrentStatus({
-        storeUrl: storeInput,
+        storeUrl: store.url,
         relayList: getRelayList(options.relay),
       }, relayClient)),
       Boolean(options.json),
@@ -913,20 +952,17 @@ petition
   .argument('<petition>', 'Petition fragment or full petition URL.')
   .requiredOption('--input <path>', 'Path to the signature JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the petition first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
   .option('--json', 'Emit JSON output.')
   .action(async (petitionInput, options) => {
-    const resolved = await resolveSiteInput(petitionInput);
-    if (!resolved.siteData || resolved.siteData.siteType !== 'petition' || !resolved.decodedFragment) {
-      fail('Expected a Nowhere petition URL or fragment.');
-    }
-    if (!resolved.siteData.pubkey) {
+    const petition = await resolveRuntimeSiteInput(petitionInput, 'petition', options.password);
+    if (!petition.siteData.pubkey) {
       fail('Petition is missing an owner pubkey.');
     }
-    const siteData = resolved.siteData;
-    const fragment = resolved.decodedFragment;
-    const ownerPubkey = resolved.siteData.pubkey;
+    const siteData = petition.siteData;
+    const ownerPubkey = petition.siteData.pubkey;
 
     const payload = await readObjectInput(options.input, 'Expected a JSON petition signature payload.');
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
@@ -935,7 +971,7 @@ petition
       creatorPubkeyHex: bytesToHex(
         Buffer.from(ownerPubkey.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
       ),
-      fragment,
+      fragment: petition.fragment,
       relays,
       petitionTags: siteData.tags,
       secret: options.secret,
@@ -950,20 +986,17 @@ petition
   .command('count')
   .description('Count signatures for a petition by its derived d-tag.')
   .argument('<petition>', 'Petition fragment or full petition URL.')
+  .option('--password <password>', 'Decrypt the petition first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (petitionInput, options) => {
-    const resolved = await resolveSiteInput(petitionInput);
-    if (!resolved.siteData || resolved.siteData.siteType !== 'petition' || !resolved.decodedFragment) {
-      fail('Expected a Nowhere petition URL or fragment.');
-    }
-    const siteData = resolved.siteData;
-    const fragment = resolved.decodedFragment;
+    const petition = await resolveRuntimeSiteInput(petitionInput, 'petition', options.password);
+    const siteData = petition.siteData;
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
 
     printOutput(
       await withPetitionTransport((transport) => countPetitionSignatures({
-        fragment,
+        fragment: petition.fragment,
         relays,
         transport,
       })),
@@ -976,21 +1009,18 @@ petition
   .description('Fetch and decrypt petition signatures using the owner secret.')
   .argument('<petition>', 'Petition fragment or full petition URL.')
   .requiredOption('--secret <secret>', 'Petition owner nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the petition first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
   .option('--csv', 'Emit CSV output.')
   .option('--json', 'Emit JSON output.')
   .action(async (petitionInput, options) => {
-    const resolved = await resolveSiteInput(petitionInput);
-    if (!resolved.siteData || resolved.siteData.siteType !== 'petition' || !resolved.decodedFragment) {
-      fail('Expected a Nowhere petition URL or fragment.');
-    }
-    const siteData = resolved.siteData;
-    const fragment = resolved.decodedFragment;
+    const petition = await resolveRuntimeSiteInput(petitionInput, 'petition', options.password);
+    const siteData = petition.siteData;
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
 
     const fetched = await withPetitionTransport((transport) => fetchPetitionSignaturesForOwner({
-        fragment,
+        fragment: petition.fragment,
         ownerSecret: options.secret,
         relays,
         powDifficulty: Number.parseInt(options.powDifficulty, 10),
@@ -1014,11 +1044,13 @@ fundraiserDonate
   .command('methods')
   .description('List the fundraiser donation methods encoded in tag l.')
   .argument('<fundraiser>', 'Fundraiser fragment or full fundraiser URL.')
+  .option('--password <password>', 'Decrypt the fundraiser first using this password.')
   .option('--json', 'Emit JSON output.')
   .action(async (fundraiserInput, options) => {
+    const fundraiser = await resolveRuntimeSiteInput(fundraiserInput, 'fundraiser', options.password);
     printOutput(
       {
-        methods: await listFundraiserDonationMethods(fundraiserInput),
+        methods: await listFundraiserDonationMethods(fundraiser.url),
       },
       Boolean(options.json),
     );
@@ -1030,11 +1062,13 @@ fundraiserDonate
   .argument('<fundraiser>', 'Fundraiser fragment or full fundraiser URL.')
   .option('--method <id>', 'Donation method id. Defaults to "lightning".', 'lightning')
   .requiredOption('--sats <count>', 'Donation amount in sats.')
+  .option('--password <password>', 'Decrypt the fundraiser first using this password.')
   .option('--json', 'Emit JSON output.')
   .action(async (fundraiserInput, options) => {
+    const fundraiser = await resolveRuntimeSiteInput(fundraiserInput, 'fundraiser', options.password);
     printOutput(
       await createFundraiserDonationInvoice({
-        fundraiserInput,
+        fundraiserInput: fundraiser.url,
         methodId: options.method,
         sats: Number.parseInt(options.sats, 10),
       }),
@@ -1046,11 +1080,13 @@ messageTip
   .command('methods')
   .description('List the message tip methods encoded in tag l.')
   .argument('<message>', 'Message fragment or full message URL.')
+  .option('--password <password>', 'Decrypt the message first using this password.')
   .option('--json', 'Emit JSON output.')
   .action(async (messageInput, options) => {
+    const message = await resolveRuntimeSiteInput(messageInput, 'message', options.password);
     printOutput(
       {
-        methods: await listMessageTipMethods(messageInput),
+        methods: await listMessageTipMethods(message.url),
       },
       Boolean(options.json),
     );
@@ -1062,11 +1098,13 @@ messageTip
   .argument('<message>', 'Message fragment or full message URL.')
   .option('--method <id>', 'Tip method id. Defaults to "lightning".', 'lightning')
   .requiredOption('--sats <count>', 'Tip amount in sats.')
+  .option('--password <password>', 'Decrypt the message first using this password.')
   .option('--json', 'Emit JSON output.')
   .action(async (messageInput, options) => {
+    const message = await resolveRuntimeSiteInput(messageInput, 'message', options.password);
     printOutput(
       await createMessageTipInvoice({
-        messageInput,
+        messageInput: message.url,
         methodId: options.method,
         sats: Number.parseInt(options.sats, 10),
       }),
@@ -1083,12 +1121,14 @@ forumWot
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--scope <scope>', 'Moderation scope: post, reply, chat, or torrent.')
   .requiredOption('--author <pubkey>', 'Author pubkey as hex or npub.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     printOutput(
       await withForumPoolCleanup(() => checkForumWotAccess({
-        forumInput,
+        forumInput: forum.url,
         scope: options.scope,
         author: options.author,
         profileRelays: getRelayList(options.profileRelay),
@@ -1103,14 +1143,16 @@ forum
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the post JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON forum post payload.');
     printOutput(
       await withForumPoolCleanup(() => publishForumPostFromInput({
-        forumInput,
+        forumInput: forum.url,
         topic: readString(payload, 'topic', false),
         title: readString(payload, 'title') as string,
         body: readString(payload, 'body', false),
@@ -1129,13 +1171,15 @@ forum
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--topic <topic>', 'Only list posts for this topic.')
   .option('--moderated', 'Filter out entries blocked by forum WoT or banned-word rules.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const posts = await withForumPoolCleanup(() => listForumPosts({
-      forumInput,
+      forumInput: forum.url,
       topic: options.topic,
       salt: options.salt,
       relays: getRelayList(options.relay),
@@ -1144,7 +1188,7 @@ forum
       {
         posts: options.moderated
           ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput,
+            forumInput: forum.url,
             scope: 'post',
             entries: posts,
             profileRelays: getRelayList(options.profileRelay),
@@ -1164,14 +1208,16 @@ forum
   .requiredOption('--post-event <id>', 'Target post event id.')
   .requiredOption('--input <path>', 'Path to the reply JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON forum reply payload.');
     printOutput(
       await withForumPoolCleanup(() => publishForumReplyFromInput({
-        forumInput,
+        forumInput: forum.url,
         postEventId: options.postEvent,
         body: readString(payload, 'body') as string,
         quotedReplyId: readString(payload, 'quotedReplyId', false),
@@ -1189,13 +1235,15 @@ forum
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--post-event <id>', 'Target post event id.')
   .option('--moderated', 'Filter out replies blocked by forum WoT or banned-word rules.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const replies = await withForumPoolCleanup(() => listForumReplies({
-      forumInput,
+      forumInput: forum.url,
       postEventId: options.postEvent,
       salt: options.salt,
       relays: getRelayList(options.relay),
@@ -1204,7 +1252,7 @@ forum
       {
         replies: options.moderated
           ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput,
+            forumInput: forum.url,
             scope: 'reply',
             entries: replies,
             profileRelays: getRelayList(options.profileRelay),
@@ -1238,10 +1286,12 @@ forumTorrent
   .option('--description <text>', 'Optional torrent description.')
   .option('--tracker <url>', 'Override trackers. Repeat to pass more than one tracker.', collectOption, [])
   .option('--ref <value>', 'Optional DB reference. Repeat to pass more than one reference.', collectOption, [])
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const torrent = await buildTorrentFromFileOptions({
       torrentFile: options.torrentFile,
       category: options.category,
@@ -1252,7 +1302,7 @@ forumTorrent
     });
     printOutput(
       await withForumPoolCleanup(() => checkForumTorrentSubmission({
-        forumInput,
+        forumInput: forum.url,
         torrent,
         salt: options.salt,
         relays: getRelayList(options.relay),
@@ -1273,14 +1323,16 @@ forumTorrent
   .option('--tracker <url>', 'Override trackers when using --torrent-file. Repeat for more.', collectOption, [])
   .option('--ref <value>', 'Optional DB reference when using --torrent-file. Repeat for more.', collectOption, [])
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const torrent = await resolveTorrentSubmission(options);
     printOutput(
       await withForumPoolCleanup(() => publishForumTorrentFromInput({
-        forumInput,
+        forumInput: forum.url,
         secret: options.secret,
         salt: options.salt,
         relays: getRelayList(options.relay),
@@ -1297,14 +1349,16 @@ forumTorrent
   .requiredOption('--torrent-event <id>', 'Target torrent event id.')
   .requiredOption('--input <path>', 'Path to the torrent reply JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON torrent reply payload.');
     printOutput(
       await withForumPoolCleanup(() => publishForumTorrentReplyFromInput({
-        forumInput,
+        forumInput: forum.url,
         torrentEventId: options.torrentEvent,
         body: readString(payload, 'body') as string,
         quotedReplyId: readString(payload, 'quotedReplyId', false),
@@ -1321,14 +1375,16 @@ forumTorrent
   .description('List replies for a forum torrent entry.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--torrent-event <id>', 'Target torrent event id.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     printOutput(
       {
         replies: await withForumPoolCleanup(() => listForumTorrentReplies({
-          forumInput,
+          forumInput: forum.url,
           torrentEventId: options.torrentEvent,
           salt: options.salt,
           relays: getRelayList(options.relay),
@@ -1343,13 +1399,15 @@ forum
   .description('List published forum torrent entries.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--moderated', 'Filter out torrents blocked by forum WoT or banned-word rules.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const torrents = await withForumPoolCleanup(() => listForumTorrents({
-      forumInput,
+      forumInput: forum.url,
       salt: options.salt,
       relays: getRelayList(options.relay),
     }));
@@ -1357,7 +1415,7 @@ forum
       {
         torrents: options.moderated
           ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput,
+            forumInput: forum.url,
             scope: 'torrent',
             entries: torrents,
             profileRelays: getRelayList(options.profileRelay),
@@ -1379,14 +1437,16 @@ forumChat
   .requiredOption('--input <path>', 'Path to the chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
   .option('--session-secret <secret>', 'Optional stable session secret to advertise for private chat.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON chat payload.');
     printOutput(
       await withForumPoolCleanup(() => publishGeneralChatMessage({
-        forumInput,
+        forumInput: forum.url,
         message: readString(payload, 'message') as string,
         secret: options.secret,
         sessionSecret: options.sessionSecret,
@@ -1406,14 +1466,16 @@ forumPrivate
   .requiredOption('--recipient-session-pubkey <pubkey>', 'Recipient stable session pubkey (hex).')
   .requiredOption('--input <path>', 'Path to the private chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON private chat payload.');
     printOutput(
       await withForumPoolCleanup(() => publishPrivateChatMessage({
-        forumInput,
+        forumInput: forum.url,
         recipientSessionPubkey: options.recipientSessionPubkey,
         message: readString(payload, 'message') as string,
         secret: options.secret,
@@ -1430,14 +1492,16 @@ forumPrivate
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--session-secret <secret>', 'Stable session secret used to decrypt incoming private messages.')
   .option('--peer-pubkey <pubkey>', 'Only include messages from this author pubkey.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     printOutput(
       {
         messages: await withForumPoolCleanup(() => listPrivateChatMessages({
-          forumInput,
+          forumInput: forum.url,
           sessionSecret: options.sessionSecret,
           peerPubkey: options.peerPubkey,
           salt: options.salt,
@@ -1453,13 +1517,15 @@ forumChat
   .description('List general forum chat messages.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .option('--moderated', 'Filter out chat messages blocked by forum WoT or banned-word rules.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const messages = await withForumPoolCleanup(() => listGeneralChatMessages({
-      forumInput,
+      forumInput: forum.url,
       salt: options.salt,
       relays: getRelayList(options.relay),
     }));
@@ -1467,7 +1533,7 @@ forumChat
       {
         messages: options.moderated
           ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput,
+            forumInput: forum.url,
             scope: 'chat',
             entries: messages,
             profileRelays: getRelayList(options.profileRelay),
@@ -1488,14 +1554,16 @@ forumRoom
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the room announcement JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON room announcement payload.');
     printOutput(
       await withForumPoolCleanup(() => publishRoomAnnouncement({
-        forumInput,
+        forumInput: forum.url,
         roomName: readString(payload, 'roomName') as string,
         accessCode: readString(payload, 'accessCode') as string,
         secret: options.secret,
@@ -1510,14 +1578,16 @@ forumRoom
   .command('announcements')
   .description('List room announcements visible to the forum key.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     printOutput(
       {
         announcements: await withForumPoolCleanup(() => listRoomAnnouncements({
-          forumInput,
+          forumInput: forum.url,
           salt: options.salt,
           relays: getRelayList(options.relay),
         })),
@@ -1532,14 +1602,16 @@ forumRoom
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the room chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON room chat payload.');
     printOutput(
       await withForumPoolCleanup(() => publishRoomChatMessage({
-        forumInput,
+        forumInput: forum.url,
         roomName: readString(payload, 'roomName') as string,
         accessCode: readString(payload, 'accessCode') as string,
         message: readString(payload, 'message') as string,
@@ -1558,13 +1630,15 @@ forumRoom
   .requiredOption('--room-name <name>', 'Room name.')
   .requiredOption('--access-code <code>', 'Room access code.')
   .option('--moderated', 'Filter out room chat messages blocked by forum WoT or banned-word rules.')
+  .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--profile-relay <url>', 'Profile relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
+    const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const messages = await withForumPoolCleanup(() => listRoomChatMessages({
-      forumInput,
+      forumInput: forum.url,
       roomName: options.roomName,
       accessCode: options.accessCode,
       salt: options.salt,
@@ -1574,7 +1648,7 @@ forumRoom
       {
         messages: options.moderated
           ? await withForumPoolCleanup(() => filterModeratedEntries({
-            forumInput,
+            forumInput: forum.url,
             scope: 'chat',
             entries: messages,
             profileRelays: getRelayList(options.profileRelay),
