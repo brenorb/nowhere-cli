@@ -12,6 +12,7 @@ Current scope in this first slice:
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
 - relay-backed CLI commands for store management, petition signing/owner review, and full forum activity management
+- forum torrent authoring from real `.torrent` files, including duplicate preflight checks and publish-time normalization
 
 Commands currently optimized for agent use expose `--json` output.
 
@@ -37,6 +38,9 @@ pnpm cli update 'https://hostednowhere.com/s#...' --patch ./patch.json --json
 pnpm cli store order 'https://hostednowhere.com/s#...' --input ./order.json --relay ws://127.0.0.1:7000 --json
 pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret nsec1... --json
 pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret nsec1... --json
+pnpm cli forum torrent parse ./archive.torrent --json
+pnpm cli forum torrent check 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --json
+pnpm cli forum torrent publish 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --secret nsec1... --json
 ```
 
 ## Builder Input
@@ -64,6 +68,9 @@ The CLI now exposes the main relay-backed workflows directly:
 - `store order`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `store status fetch`
 - `petition sign`, `petition count`, `petition signatures`
 - `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrent reply`, `forum torrent replies`, `forum torrents`, `forum room announce`, `forum room announcements`, `forum room send`, `forum room list`, `forum chat send`, `forum chat list`, `forum private send`, `forum private list`
+- `forum torrent parse` reads a real `.torrent` file and extracts the infohash, inferred title, file list, and deduplicated tracker set the same way the website does.
+- `forum torrent check` runs the website-style submission preflight against a forum: torrent feature enabled via `b`, normalized category path, fixed-root enforcement via `F`/`q`, and duplicate detection by infohash then case-insensitive title.
+- `forum torrent publish` now accepts either `--input <json>` for raw agent-authored payloads or `--torrent-file <path>` plus `--category`, with optional `--title`, `--description`, repeated `--tracker`, and repeated `--ref`.
 
 Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it. Forum commands also accept `--salt <value>` anywhere the website derives an alternate salted forum keyspace.
 
