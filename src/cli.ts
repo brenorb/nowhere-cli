@@ -24,6 +24,7 @@ import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from '
 import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
+import { resolveCreateRawInput, type CreateCommandOptions } from './lib/create-long-form.js';
 import { createMessageTipInvoice, listMessageTipMethods } from './lib/message-tips.js';
 import { printOutput } from './lib/output.js';
 import { destroyPool, getPetitionRelays } from './lib/relay.js';
@@ -787,9 +788,23 @@ program
 
 program
   .command('create')
-  .description('Create one of the eight Nowhere site types from structured JSON input.')
+  .description('Create one of the eight Nowhere site types from JSON input or long-form CLI flags.')
   .argument('<tool>', `One of: ${toolChoices.join(', ')}`)
-  .requiredOption('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
+  .option('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
+  .option('--name <text>', 'Site name for long-form builder mode.')
+  .option('--description <text>', 'Site description/body for long-form builder mode.')
+  .option('--description-file <path>', 'Read the site description/body from this file instead of --description.')
+  .option('--image <url>', 'Site image URL for long-form builder mode.')
+  .option('--pubkey <pubkey>', 'Owner pubkey as npub, hex, or Nowhere base64url for long-form builder mode.')
+  .option('--tag <tag>', 'Repeatable tag in KEY or KEY=VALUE form for long-form builder mode.', collectOption, [])
+  .option(
+    '--item <spec>',
+    'Repeatable store item spec like "name=Sticker Pack;price=7.5;description=Matte vinyl;tag=f".',
+    collectOption,
+    [],
+  )
+  .option('--svg <svg>', 'Inline SVG markup for art creation in long-form builder mode.')
+  .option('--svg-file <path>', 'Read SVG markup for art creation from this file instead of --svg.')
   .option('--sign-secret <secret>', 'Sign the generated site with this nsec or hex secret.')
   .option('--use-signer', 'Use the persisted remote signer instead of --sign-secret.')
   .option('--encrypt-password <password>', 'Encrypt the final fragment after signing, matching the web flow.')
@@ -799,10 +814,10 @@ program
       fail(`Unsupported tool "${tool}". Expected one of: ${toolChoices.join(', ')}.`);
     }
 
-    const raw = await readJsonInput(options.input);
-    const built = await buildSite(tool as ToolSlug, raw);
     const signer = await resolveOptionalSigner(options.signSecret, options.useSigner, '--sign-secret');
     try {
+      const raw = await resolveCreateRawInput(tool as ToolSlug, options as CreateCommandOptions, signer);
+      const built = await buildSite(tool as ToolSlug, raw);
       const published = await finalizePublish(
         built.fragment,
         options.signSecret,
