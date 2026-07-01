@@ -7,7 +7,7 @@ import {
   decrypt as nip44Decrypt,
   getConversationKey,
 } from 'nostr-tools/nip44';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools/core';
 import { describeSecret, type SecretMaterial } from './keys.js';
 import { fetchEvent, fetchEvents, getForumRelays, publishToRelays } from './relay.js';
@@ -97,7 +97,15 @@ export interface ChatMessagePayload {
 export interface DecryptedChatMessage {
   eventId: string;
   payload: ChatMessagePayload;
-  channel: 'general';
+  channel: 'general' | 'room';
+  roomName?: string;
+}
+
+export interface DecryptedRoomAnnouncement {
+  eventId: string;
+  payload: ChatMessagePayload;
+  roomName: string;
+  accessCode: string;
 }
 
 export interface DecryptedForumTorrent {
@@ -106,6 +114,7 @@ export interface DecryptedForumTorrent {
   authorPubkey: string;
   torrentData: TorrentData;
   wrappedContent: string;
+  magnetLink: string;
 }
 
 function deriveForumKeypair(fragment: string) {
@@ -158,9 +167,50 @@ function deriveTorrentPostTag(wrappedContent: string): string {
   return bytesToHex(sha256(encoder.encode(wrappedContent))).slice(0, 32);
 }
 
+function deriveRoomKeypair(forumPrivkey: Uint8Array, roomName: string, accessCode: string) {
+  const message = new Uint8Array([
+    ...forumPrivkey,
+    ...encoder.encode(roomName),
+    0,
+    ...encoder.encode(accessCode),
+  ]);
+  const privkey = hmac(sha256, encoder.encode('nowhere-chat-room'), message);
+  return { privkey, pubkey: getPublicKey(privkey) };
+}
+
 function wrapContentForSigning(content: string): string {
   const encrypted = nip44Encrypt(content, NOWHERE_CONV_KEY);
   return NOWHERE_PREFIX + encrypted;
+}
+
+function verifyInnerSignature(pubkey: string, sig: string, wrappedContent: string, timestamp: number): boolean {
+  const event = {
+    kind: INNER_EVENT_KIND,
+    created_at: timestamp,
+    content: wrappedContent,
+    tags: [] as string[][],
+    pubkey,
+    sig,
+    id: '',
+  };
+  event.id = getEventHash(event);
+  return verifyEvent(event);
+}
+
+function randomTimestampOffset(): number {
+  return -Math.floor(Math.random() * 4 * 86_400);
+}
+
+export function buildMagnetLink(torrent: TorrentData): string {
+  let url = `magnet:?xt=urn:btih:${torrent.x}&dn=${encodeURIComponent(torrent.title)}`;
+  for (const tracker of torrent.trackers) {
+    url += `&tr=${encodeURIComponent(tracker)}`;
+  }
+  return url;
+}
+
+function isRoomAnnouncementValue(room: ChatMessagePayload['room']): room is { name: string; code: string } {
+  return typeof room === 'object' && room !== null && 'name' in room && 'code' in room;
 }
 
 function buildTopicEntries(context: ForumContext): Array<{ name: string; tag: string }> {
@@ -185,14 +235,15 @@ function resolveAuthor(secret?: string): SecretMaterial | { pubkeyHex: string; s
   };
 }
 
-function createContext(input: string, relayOverride?: string[]): ForumContext {
+function createContext(input: string, relayOverride?: string[], salt?: string): ForumContext {
   const { fragment } = normalizeToFragment(input);
   const decoded = decode(fragment);
   if (decoded.siteType !== 'discussion') {
     throw new Error('Expected a forum URL or fragment.');
   }
   const forumData = decoded as ForumData;
-  const { privkey, pubkey } = deriveForumKeypair(fragment);
+  const effectiveFragment = salt ? `${fragment}:${salt}` : fragment;
+  const { privkey, pubkey } = deriveForumKeypair(effectiveFragment);
   return {
     fragment,
     data: forumData,
@@ -202,20 +253,20 @@ function createContext(input: string, relayOverride?: string[]): ForumContext {
   };
 }
 
-export function getForumContext(input: string, relayOverride?: string[]): ForumContext {
-  return createContext(input, relayOverride);
+export function getForumContext(input: string, relayOverride?: string[], salt?: string): ForumContext {
+  return createContext(input, relayOverride, salt);
 }
 
-export function getTopicTagMap(input: string): Array<{ topic: string; topicTag: string }> {
-  const context = createContext(input);
+export function getTopicTagMap(input: string, salt?: string): Array<{ topic: string; topicTag: string }> {
+  const context = createContext(input, undefined, salt);
   return buildTopicEntries(context).map((entry) => ({
     topic: entry.name,
     topicTag: entry.tag,
   }));
 }
 
-export function getChatTag(input: string): string {
-  return deriveChatTag(createContext(input).forumPrivkey);
+export function getChatTag(input: string, salt?: string): string {
+  return deriveChatTag(createContext(input, undefined, salt).forumPrivkey);
 }
 
 export async function publishForumPostFromInput(options: {
@@ -226,8 +277,9 @@ export async function publishForumPostFromInput(options: {
   link?: string;
   secret?: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const topic = options.topic ?? '';
   const topicTag = deriveTopicTag(context.forumPrivkey, topic);
   const author = resolveAuthor(options.secret);
@@ -259,7 +311,7 @@ export async function publishForumPostFromInput(options: {
   const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
   const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
   const event = finalizeEvent(
-    { kind: 30078, created_at: timestamp, content: encrypted, tags: [['t', topicTag]] },
+    { kind: 30078, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', topicTag]] },
     outerSecret,
   );
   await publishToRelays(event, context.relays);
@@ -281,7 +333,10 @@ function decryptPost(event: Event, context: ForumContext, topicTag: string): Dec
     const conversationKey = getConversationKey(context.forumPrivkey, event.pubkey);
     const decrypted = nip44Decrypt(event.content, conversationKey);
     const payload = JSON.parse(decrypted) as ForumPostPayload;
-    if (payload.v !== 1 || !payload.t || !payload.p || !payload.ts) {
+    if (payload.v !== 1 || !payload.t || !payload.p || !payload.ts || !payload.sig || !payload.w) {
+      return null;
+    }
+    if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
       return null;
     }
 
@@ -306,8 +361,9 @@ export async function listForumPosts(options: {
   forumInput: string;
   topic?: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const topicEntries = buildTopicEntries(context);
   const targetEntries = options.topic !== undefined
     ? topicEntries.filter((entry) => entry.name === options.topic)
@@ -334,8 +390,9 @@ export async function publishForumReplyFromInput(options: {
   quotedReplyId?: string;
   secret?: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const postEvent = await fetchEvent({ ids: [options.postEventId] }, context.relays);
   if (!postEvent) {
     throw new Error(`Post ${options.postEventId} was not found on the configured relays.`);
@@ -373,7 +430,7 @@ export async function publishForumReplyFromInput(options: {
   const conversationKey = getConversationKey(outerSecret, replyKeypair.pubkey);
   const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
   const event = finalizeEvent(
-    { kind: 30078, created_at: timestamp, content: encrypted, tags: [['t', post.postTag]] },
+    { kind: 30078, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', post.postTag]] },
     outerSecret,
   );
   await publishToRelays(event, context.relays);
@@ -384,8 +441,9 @@ export async function listForumReplies(options: {
   forumInput: string;
   postEventId: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const postEvent = await fetchEvent({ ids: [options.postEventId] }, context.relays);
   if (!postEvent) {
     throw new Error(`Post ${options.postEventId} was not found on the configured relays.`);
@@ -407,7 +465,10 @@ export async function listForumReplies(options: {
         const conversationKey = getConversationKey(replyKeypair.privkey, event.pubkey);
         const decrypted = nip44Decrypt(event.content, conversationKey);
         const payload = JSON.parse(decrypted) as ForumReplyPayload;
-        if (payload.v !== 1 || !payload.b || !payload.p) {
+        if (payload.v !== 1 || !payload.b || !payload.p || !payload.sig || !payload.w) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
           return null;
         }
         return {
@@ -428,8 +489,9 @@ export async function publishForumTorrentFromInput(options: {
   torrent: TorrentData;
   secret?: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const author = resolveAuthor(options.secret);
   const topicTag = deriveTopicTag(context.forumPrivkey, TORRENT_TOPIC_SEED);
   const timestamp = Math.floor(Date.now() / 1000);
@@ -451,7 +513,7 @@ export async function publishForumTorrentFromInput(options: {
   const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
   const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
   const event = finalizeEvent(
-    { kind: 30078, created_at: timestamp, content: encrypted, tags: [['t', topicTag]] },
+    { kind: 30078, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', topicTag]] },
     outerSecret,
   );
   await publishToRelays(event, context.relays);
@@ -466,8 +528,9 @@ export async function publishForumTorrentFromInput(options: {
 export async function listForumTorrents(options: {
   forumInput: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const topicTag = deriveTopicTag(context.forumPrivkey, TORRENT_TOPIC_SEED);
   const events = await fetchEvents({ kinds: [30078], '#t': [topicTag] }, context.relays);
   return events
@@ -476,6 +539,12 @@ export async function listForumTorrents(options: {
         const conversationKey = getConversationKey(context.forumPrivkey, event.pubkey);
         const decrypted = nip44Decrypt(event.content, conversationKey);
         const payload = JSON.parse(decrypted) as ForumTorrentPayload;
+        if (payload.v !== 1 || !payload.p || !payload.sig || !payload.w) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
+          return null;
+        }
         if (!payload.w.startsWith(NOWHERE_PREFIX)) {
           return null;
         }
@@ -487,6 +556,7 @@ export async function listForumTorrents(options: {
           authorPubkey: payload.p,
           torrentData,
           wrappedContent: payload.w,
+          magnetLink: buildMagnetLink(torrentData),
         };
       } catch {
         return null;
@@ -495,13 +565,255 @@ export async function listForumTorrents(options: {
     .filter((entry): entry is DecryptedForumTorrent => entry !== null);
 }
 
+export async function publishForumTorrentReplyFromInput(options: {
+  forumInput: string;
+  torrentEventId: string;
+  body: string;
+  quotedReplyId?: string;
+  secret?: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const torrentEvent = await fetchEvent({ ids: [options.torrentEventId] }, context.relays);
+  if (!torrentEvent) {
+    throw new Error(`Torrent ${options.torrentEventId} was not found on the configured relays.`);
+  }
+  const torrents = await listForumTorrents({
+    forumInput: options.forumInput,
+    relays: context.relays,
+    salt: options.salt,
+  });
+  const target = torrents.find((entry) => entry.eventId === options.torrentEventId);
+  if (!target) {
+    throw new Error('Could not decrypt the target torrent.');
+  }
+
+  const author = resolveAuthor(options.secret);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const wrappedContent = wrapContentForSigning(JSON.stringify({ b: options.body, ts: timestamp }));
+  const inner = finalizeEvent(
+    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
+    author.secretKey,
+  );
+  const payload: ForumReplyPayload = {
+    v: 1,
+    b: options.body,
+    p: author.pubkeyHex,
+    ts: timestamp,
+    sig: inner.sig,
+    w: wrappedContent,
+    ref: options.quotedReplyId,
+  };
+
+  const postTag = deriveTorrentPostTag(target.wrappedContent);
+  const replyKeypair = deriveTorrentReplyKeypair(target.wrappedContent);
+  const outerSecret = generateSecretKey();
+  const conversationKey = getConversationKey(outerSecret, replyKeypair.pubkey);
+  const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
+  const event = finalizeEvent(
+    { kind: 30078, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', postTag]] },
+    outerSecret,
+  );
+  await publishToRelays(event, context.relays);
+  return { event, postTag };
+}
+
+export async function listForumTorrentReplies(options: {
+  forumInput: string;
+  torrentEventId: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const torrents = await listForumTorrents({
+    forumInput: options.forumInput,
+    relays: context.relays,
+    salt: options.salt,
+  });
+  const target = torrents.find((entry) => entry.eventId === options.torrentEventId);
+  if (!target) {
+    throw new Error('Could not decrypt the target torrent.');
+  }
+
+  const postTag = deriveTorrentPostTag(target.wrappedContent);
+  const replyKeypair = deriveTorrentReplyKeypair(target.wrappedContent);
+  const events = await fetchEvents({ kinds: [30078], '#t': [postTag] }, context.relays);
+  return events
+    .map((event) => {
+      try {
+        const conversationKey = getConversationKey(replyKeypair.privkey, event.pubkey);
+        const decrypted = nip44Decrypt(event.content, conversationKey);
+        const payload = JSON.parse(decrypted) as ForumReplyPayload;
+        if (payload.v !== 1 || !payload.b || !payload.p || !payload.sig || !payload.w) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
+          return null;
+        }
+        return {
+          eventId: event.id,
+          postTag,
+          payload,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is DecryptedForumReply => entry !== null)
+    .sort((left, right) => right.payload.ts - left.payload.ts);
+}
+
+export async function publishRoomAnnouncement(options: {
+  forumInput: string;
+  roomName: string;
+  accessCode: string;
+  secret?: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const author = resolveAuthor(options.secret);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const chatTag = deriveChatTag(context.forumPrivkey);
+  const wrappedContent = wrapContentForSigning('room');
+  const inner = finalizeEvent(
+    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
+    author.secretKey,
+  );
+  const payload: ChatMessagePayload = {
+    v: 1,
+    b: '',
+    p: author.pubkeyHex,
+    ts: timestamp,
+    sig: inner.sig,
+    w: wrappedContent,
+    room: { name: options.roomName, code: options.accessCode },
+  };
+
+  const outerSecret = generateSecretKey();
+  const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
+  const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
+  const event = finalizeEvent(
+    { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
+    outerSecret,
+  );
+  await publishToRelays(event, context.relays);
+  return { event, chatTag };
+}
+
+export async function listRoomAnnouncements(options: {
+  forumInput: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const messages = await listGeneralChatMessages(options);
+  return messages.flatMap((message) => {
+    if (!isRoomAnnouncementValue(message.payload.room)) {
+      return [];
+    }
+
+    return [{
+      eventId: message.eventId,
+      payload: message.payload,
+      roomName: message.payload.room.name,
+      accessCode: message.payload.room.code,
+    }];
+  });
+}
+
+export async function publishRoomChatMessage(options: {
+  forumInput: string;
+  roomName: string;
+  accessCode: string;
+  message: string;
+  secret?: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const author = resolveAuthor(options.secret);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const chatTag = deriveChatTag(context.forumPrivkey);
+  const { pubkey: roomPubkey } = deriveRoomKeypair(context.forumPrivkey, options.roomName, options.accessCode);
+  const wrappedContent = wrapContentForSigning(options.message);
+  const inner = finalizeEvent(
+    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
+    author.secretKey,
+  );
+  const payload: ChatMessagePayload = {
+    v: 1,
+    b: options.message,
+    p: author.pubkeyHex,
+    ts: timestamp,
+    sig: inner.sig,
+    w: wrappedContent,
+    room: options.roomName,
+  };
+
+  const outerSecret = generateSecretKey();
+  const conversationKey = getConversationKey(outerSecret, roomPubkey);
+  const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
+  const event = finalizeEvent(
+    { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
+    outerSecret,
+  );
+  await publishToRelays(event, context.relays);
+  return { event, chatTag, roomName: options.roomName };
+}
+
+export async function listRoomChatMessages(options: {
+  forumInput: string;
+  roomName: string;
+  accessCode: string;
+  relays?: string[];
+  salt?: string;
+}) {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const chatTag = deriveChatTag(context.forumPrivkey);
+  const { privkey: roomPrivkey } = deriveRoomKeypair(context.forumPrivkey, options.roomName, options.accessCode);
+  const events = await fetchEvents({ kinds: [21423], '#t': [chatTag] }, context.relays);
+  return events
+    .map((event) => {
+      try {
+        const conversationKey = getConversationKey(roomPrivkey, event.pubkey);
+        const decrypted = nip44Decrypt(event.content, conversationKey);
+        const payload = JSON.parse(decrypted) as ChatMessagePayload;
+        if (
+          payload.v !== 1
+          || typeof payload.b !== 'string'
+          || !payload.p
+          || payload.room !== options.roomName
+          || !payload.sig
+          || !payload.w
+        ) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
+          return null;
+        }
+        return {
+          eventId: event.id,
+          payload,
+          channel: 'room' as const,
+          roomName: options.roomName,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry) => entry !== null)
+    .sort((left, right) => right.payload.ts - left.payload.ts);
+}
+
 export async function publishGeneralChatMessage(options: {
   forumInput: string;
   message: string;
   secret?: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const author = resolveAuthor(options.secret);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
@@ -523,7 +835,7 @@ export async function publishGeneralChatMessage(options: {
   const conversationKey = getConversationKey(outerSecret, context.forumPubkeyHex);
   const encrypted = nip44Encrypt(JSON.stringify(payload), conversationKey);
   const event = finalizeEvent(
-    { kind: 21423, created_at: timestamp, content: encrypted, tags: [['t', chatTag]] },
+    { kind: 21423, created_at: timestamp + randomTimestampOffset(), content: encrypted, tags: [['t', chatTag]] },
     outerSecret,
   );
   await publishToRelays(event, context.relays);
@@ -533,8 +845,9 @@ export async function publishGeneralChatMessage(options: {
 export async function listGeneralChatMessages(options: {
   forumInput: string;
   relays?: string[];
+  salt?: string;
 }) {
-  const context = createContext(options.forumInput, options.relays);
+  const context = createContext(options.forumInput, options.relays, options.salt);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const events = await fetchEvents({ kinds: [21423], '#t': [chatTag] }, context.relays);
   return events
@@ -543,7 +856,10 @@ export async function listGeneralChatMessages(options: {
         const conversationKey = getConversationKey(context.forumPrivkey, event.pubkey);
         const decrypted = nip44Decrypt(event.content, conversationKey);
         const payload = JSON.parse(decrypted) as ChatMessagePayload;
-        if (payload.v !== 1 || !payload.b || !payload.p) {
+        if (payload.v !== 1 || typeof payload.b !== 'string' || !payload.p || !payload.sig || !payload.w) {
+          return null;
+        }
+        if (!verifyInnerSignature(payload.p, payload.sig, payload.w, payload.ts)) {
           return null;
         }
         return {
@@ -555,6 +871,6 @@ export async function listGeneralChatMessages(options: {
         return null;
       }
     })
-    .filter((entry): entry is DecryptedChatMessage => entry !== null)
+    .filter((entry) => entry !== null)
     .sort((left, right) => right.payload.ts - left.payload.ts);
 }

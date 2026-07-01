@@ -3,15 +3,22 @@ import { encodeForum, type ForumData } from '@nowhere/codec';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay, type MockRelayHandle } from '../support/mockRelay.js';
 import {
+  buildMagnetLink,
   getTopicTagMap,
   listForumPosts,
   listForumReplies,
+  listForumTorrentReplies,
   listForumTorrents,
   listGeneralChatMessages,
+  listRoomAnnouncements,
+  listRoomChatMessages,
   publishForumPostFromInput,
   publishForumReplyFromInput,
+  publishForumTorrentReplyFromInput,
   publishForumTorrentFromInput,
   publishGeneralChatMessage,
+  publishRoomAnnouncement,
+  publishRoomChatMessage,
   TORRENT_TOPIC_SEED,
 } from '../../src/lib/forum-live.js';
 
@@ -63,6 +70,32 @@ describe('forum runtime module', () => {
     expect(posts[0]?.topic).toBe('Ops');
   });
 
+  test('isolates salted forum posts from the unsalted forum namespace', async () => {
+    relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const forumFragment = makeForum(owner.nowherePubkey);
+
+    await publishForumPostFromInput({
+      forumInput: forumFragment,
+      title: 'Salted thread',
+      body: 'Same forum, different keyspace',
+      secret: owner.nsec,
+      relays: [relay.url],
+      salt: 'rotation-1',
+    });
+
+    const unsaltedPosts = await listForumPosts({ forumInput: forumFragment, relays: [relay.url] });
+    const saltedPosts = await listForumPosts({
+      forumInput: forumFragment,
+      relays: [relay.url],
+      salt: 'rotation-1',
+    });
+
+    expect(unsaltedPosts).toHaveLength(0);
+    expect(saltedPosts).toHaveLength(1);
+    expect(saltedPosts[0]?.payload.t).toBe('Salted thread');
+  });
+
   test('publishes and lists replies via post event lookup', async () => {
     relay = await startMockRelay();
     const owner = generateSecretMaterial();
@@ -99,7 +132,7 @@ describe('forum runtime module', () => {
     const owner = generateSecretMaterial();
     const forumFragment = makeForum(owner.nowherePubkey);
 
-    await publishForumTorrentFromInput({
+    const torrent = await publishForumTorrentFromInput({
       forumInput: forumFragment,
       secret: owner.secretHex,
       relays: [relay.url],
@@ -117,7 +150,24 @@ describe('forum runtime module', () => {
     const torrents = await listForumTorrents({ forumInput: forumFragment, relays: [relay.url] });
     expect(torrents).toHaveLength(1);
     expect(torrents[0]?.torrentData.title).toBe('Archive');
+    expect(torrents[0]?.magnetLink).toBe(buildMagnetLink(torrents[0]!.torrentData));
     expect(getTopicTagMap(forumFragment).some((entry) => entry.topic === TORRENT_TOPIC_SEED)).toBe(false);
+
+    await publishForumTorrentReplyFromInput({
+      forumInput: forumFragment,
+      torrentEventId: torrent.event.id,
+      body: 'Seeding confirmed',
+      secret: owner.nsec,
+      relays: [relay.url],
+    });
+
+    const replies = await listForumTorrentReplies({
+      forumInput: forumFragment,
+      torrentEventId: torrent.event.id,
+      relays: [relay.url],
+    });
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.payload.b).toBe('Seeding confirmed');
   });
 
   test('publishes and lists general chat messages', async () => {
@@ -135,5 +185,41 @@ describe('forum runtime module', () => {
     const messages = await listGeneralChatMessages({ forumInput: forumFragment, relays: [relay.url] });
     expect(messages).toHaveLength(1);
     expect(messages[0]?.payload.b).toBe('General chat online');
+  });
+
+  test('publishes room announcements and decrypts room chat with the shared access code', async () => {
+    relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const forumFragment = makeForum(owner.nowherePubkey);
+
+    await publishRoomAnnouncement({
+      forumInput: forumFragment,
+      roomName: 'Logistics',
+      accessCode: 'shared-secret',
+      secret: owner.nsec,
+      relays: [relay.url],
+    });
+
+    const announcements = await listRoomAnnouncements({ forumInput: forumFragment, relays: [relay.url] });
+    expect(announcements).toHaveLength(1);
+    expect(announcements[0]?.roomName).toBe('Logistics');
+
+    await publishRoomChatMessage({
+      forumInput: forumFragment,
+      roomName: 'Logistics',
+      accessCode: 'shared-secret',
+      message: 'Meet at fallback point B',
+      secret: owner.secretHex,
+      relays: [relay.url],
+    });
+
+    const roomMessages = await listRoomChatMessages({
+      forumInput: forumFragment,
+      roomName: 'Logistics',
+      accessCode: 'shared-secret',
+      relays: [relay.url],
+    });
+    expect(roomMessages).toHaveLength(1);
+    expect(roomMessages[0]?.payload.b).toBe('Meet at fallback point B');
   });
 });

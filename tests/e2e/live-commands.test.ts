@@ -229,7 +229,7 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('forum commands publish posts, replies, torrents, and chat', { timeout: 30000 }, async () => {
+  test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
 
@@ -283,6 +283,43 @@ describe('relay-backed CLI commands', () => {
 
               expect(posts.posts).toHaveLength(1);
               expect(posts.posts[0]?.payload.t).toBe('Checkpoint');
+
+              await withJsonFile(
+                {
+                  title: 'Salted checkpoint',
+                  body: 'Fallback route only',
+                },
+                async (saltedPostPath) => {
+                  await cli(
+                    'forum',
+                    'post',
+                    forum.fragment,
+                    '--input',
+                    saltedPostPath,
+                    '--secret',
+                    owner.nsec,
+                    '--salt',
+                    'rotation-1',
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+
+                  const saltedPosts = await cli(
+                    'forum',
+                    'posts',
+                    forum.fragment,
+                    '--salt',
+                    'rotation-1',
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+
+                  expect(saltedPosts.posts).toHaveLength(1);
+                  expect(saltedPosts.posts[0]?.payload.t).toBe('Salted checkpoint');
+                },
+              );
 
               await withJsonFile(
                 { body: 'Confirmed' },
@@ -360,6 +397,124 @@ describe('relay-backed CLI commands', () => {
 
               expect(torrents.torrents).toHaveLength(1);
               expect(torrents.torrents[0]?.torrentData.title).toBe('Archive');
+              expect(torrents.torrents[0]?.magnetLink).toContain('magnet:?xt=urn:btih:');
+
+              await withJsonFile(
+                { body: 'Seeding confirmed' },
+                async (torrentReplyPath) => {
+                  const reply = await cli(
+                    'forum',
+                    'torrent',
+                    'reply',
+                    forum.fragment,
+                    '--torrent-event',
+                    torrent.event.id,
+                    '--input',
+                    torrentReplyPath,
+                    '--secret',
+                    owner.nsec,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+
+                  expect(reply.postTag).toBe(torrent.postTag);
+
+                  const replies = await cli(
+                    'forum',
+                    'torrent',
+                    'replies',
+                    forum.fragment,
+                    '--torrent-event',
+                    torrent.event.id,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+
+                  expect(replies.replies).toHaveLength(1);
+                  expect(replies.replies[0]?.payload.b).toBe('Seeding confirmed');
+                },
+              );
+            },
+          );
+
+          await withJsonFile(
+            {
+              roomName: 'Logistics',
+              accessCode: 'shared-secret',
+            },
+            async (announcementPath) => {
+              const announced = await cli(
+                'forum',
+                'room',
+                'announce',
+                forum.fragment,
+                '--input',
+                announcementPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(announced.chatTag).toHaveLength(32);
+
+              const announcements = await cli(
+                'forum',
+                'room',
+                'announcements',
+                forum.fragment,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(announcements.announcements).toHaveLength(1);
+              expect(announcements.announcements[0]?.roomName).toBe('Logistics');
+            },
+          );
+
+          await withJsonFile(
+            {
+              roomName: 'Logistics',
+              accessCode: 'shared-secret',
+              message: 'Meet at fallback point B',
+            },
+            async (roomChatPath) => {
+              const sent = await cli(
+                'forum',
+                'room',
+                'send',
+                forum.fragment,
+                '--input',
+                roomChatPath,
+                '--secret',
+                owner.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(sent.roomName).toBe('Logistics');
+
+              const roomMessages = await cli(
+                'forum',
+                'room',
+                'list',
+                forum.fragment,
+                '--room-name',
+                'Logistics',
+                '--access-code',
+                'shared-secret',
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(roomMessages.messages).toHaveLength(1);
+              expect(roomMessages.messages[0]?.payload.b).toBe('Meet at fallback point B');
             },
           );
 
@@ -392,8 +547,12 @@ describe('relay-backed CLI commands', () => {
                 '--json',
               );
 
-              expect(listed.messages).toHaveLength(1);
-              expect(listed.messages[0]?.payload.b).toBe('General chat online');
+              expect(listed.messages).toHaveLength(2);
+              expect(listed.messages.some((message: { payload: { b: string } }) => message.payload.b === 'General chat online')).toBe(true);
+              expect(
+                listed.messages.some((message: { payload: { room?: { name: string } | string } }) =>
+                  typeof message.payload.room === 'object' && message.payload.room?.name === 'Logistics'),
+              ).toBe(true);
             },
           );
         },
