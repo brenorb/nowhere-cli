@@ -45,6 +45,15 @@ export function getPool(): SimplePool {
   return pool;
 }
 
+export function destroyPool(): void {
+  if (!pool) {
+    return;
+  }
+
+  pool.destroy();
+  pool = null;
+}
+
 export async function fetchEvent(filter: Filter, relays: string[]): Promise<Event | null> {
   return getPool().get(relays, filter);
 }
