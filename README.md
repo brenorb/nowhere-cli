@@ -13,7 +13,7 @@ Current scope in this first slice:
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
 - relay-backed CLI commands for store management, petition signing/owner review, and full forum activity management
 - forum torrent authoring from real `.torrent` files, including duplicate preflight checks and publish-time normalization
-- store checkout orchestration and fundraiser donation helpers, including Lightning invoice flows
+- store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
 
 Commands currently optimized for agent use expose `--json` output.
@@ -49,6 +49,8 @@ pnpm cli store checkout quote 'https://hostednowhere.com/s#...' --cart ./cart.js
 pnpm cli store checkout begin 'https://hostednowhere.com/s#...' --cart ./cart.json --buyer ./buyer.json --method payid --json
 pnpm cli fundraiser donate methods 'https://hostednowhere.com/s#...' --json
 pnpm cli fundraiser donate invoice 'https://hostednowhere.com/s#...' --sats 5000 --json
+pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
+pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
 
 ## Builder Input
@@ -69,6 +71,7 @@ The CLI now includes upstream-compatible runtime modules for the parts of Nowher
 - `src/lib/forum-live.ts` publishes and reads forum posts, replies, torrent entries, torrent reply threads, salted forum namespaces, room announcements, room chat, private chat, and general chat messages.
 - `src/lib/forum-moderation.ts` ports the forum Web-of-Trust and banned-word filtering rules so CLI agents can check author eligibility and request moderated listings that match the website's visibility rules.
 - `src/lib/fundraiser-donate.ts` lists fundraiser donation methods from tag `l` and can mint Lightning invoices for donation amounts in sats.
+- `src/lib/message-tips.ts` lists message tip methods from tag `l` and can mint Lightning invoices for reader tips in sats.
 
 Those modules are covered with e2e tests against the local mock relay in `tests/support/mockRelay.ts`, and the command layer in `src/cli.ts` now wraps them for agent-facing automation.
 
@@ -79,6 +82,7 @@ The CLI now exposes the main relay-backed workflows directly:
 - `store order`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `store status fetch`
 - `store checkout quote`, `store checkout begin`
 - `fundraiser donate methods`, `fundraiser donate invoice`
+- `message tip methods`, `message tip invoice`
 - `petition sign`, `petition count`, `petition signatures`
 - `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrent reply`, `forum torrent replies`, `forum torrents`, `forum room announce`, `forum room announcements`, `forum room send`, `forum room list`, `forum chat send`, `forum chat list`, `forum private send`, `forum private list`, `forum wot check`
 - `forum torrent parse` reads a real `.torrent` file and extracts the infohash, inferred title, file list, and deduplicated tracker set the same way the website does.
@@ -91,10 +95,16 @@ Publish-style commands accept structured JSON via `--input <path>` or `--input -
 
 `store checkout quote` mirrors the website's preflight: it calculates subtotal, shipping, discount, total, buyer-field requirements, allowed/excluded countries, payment-method availability, and inventory gating from the current encrypted status payload when tag `k` is enabled. `store checkout begin` then publishes the order and returns either a Lightning invoice or manual payment instructions, depending on the chosen method.
 
+`store orders` now also accepts `--csv` for the same export-style workflow the manage dashboard exposes.
+
 `forum chat send` accepts `--session-secret` to advertise the stable session pubkey that the website uses for private chat routing. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for a given session secret.
 
 `forum posts`, `forum replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
 
 `petition sign` now enforces the petition's own required-field tags and country restrictions before it spends time encrypting, computing proof-of-work, and publishing.
 
+`petition signatures` now also accepts `--csv` for owner-side signature export.
+
 `fundraiser donate methods` exposes the parsed donation handles from the fundraiser's `l` tag, and `fundraiser donate invoice` can turn the Lightning handle into a live invoice for a sats amount.
+
+`message tip methods` exposes the parsed tip handles from the message's `l` tag, and `message tip invoice` can turn the Lightning handle into a live invoice for a sats amount.
