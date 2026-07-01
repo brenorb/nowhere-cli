@@ -9,6 +9,7 @@ import {
 } from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools/core';
+import type { CliSigner } from './active-signer.js';
 import { describeSecret, type SecretMaterial } from './keys.js';
 import { getForumSessionMaterial } from './forum-session.js';
 import { fetchEvent, fetchEvents, getForumRelays, publishToRelays, publishToRelaysBestEffort } from './relay.js';
@@ -29,6 +30,12 @@ export interface ForumContext {
   forumPrivkey: Uint8Array;
   forumPubkeyHex: string;
   relays: string[];
+}
+
+interface AuthorIdentity {
+  pubkeyHex: string;
+  secretKey?: Uint8Array;
+  signer?: CliSigner;
 }
 
 export interface ForumPostPayload {
@@ -279,12 +286,42 @@ function getTorrentSettings(data: ForumData): ForumTorrentSettings {
   };
 }
 
-async function resolveAuthor(secret?: string): Promise<SecretMaterial> {
+async function resolveAuthor(secret?: string, signer?: CliSigner): Promise<AuthorIdentity> {
+  if (signer) {
+    return {
+      pubkeyHex: await signer.getPublicKey(),
+      signer,
+    };
+  }
   if (secret) {
     return describeSecret(secret);
   }
 
   return getForumSessionMaterial();
+}
+
+async function signWrappedContent(author: AuthorIdentity, wrappedContent: string, timestamp: number): Promise<{ pubkeyHex: string; signature: string }> {
+  if (author.signer) {
+    const signed = await author.signer.signEvent({
+      kind: INNER_EVENT_KIND,
+      created_at: timestamp,
+      content: wrappedContent,
+      tags: [],
+    });
+    return {
+      pubkeyHex: signed.pubkey,
+      signature: signed.sig,
+    };
+  }
+
+  const inner = finalizeEvent(
+    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
+    author.secretKey as Uint8Array,
+  );
+  return {
+    pubkeyHex: author.pubkeyHex,
+    signature: inner.sig,
+  };
 }
 
 function resolveForumFragment(input: string): { fragment: string; data: ForumData } {
@@ -360,28 +397,26 @@ export async function publishForumPostFromInput(options: {
   body?: string;
   link?: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
   const topic = options.topic ?? '';
   const topicTag = deriveTopicTag(context.forumPrivkey, topic);
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(
     JSON.stringify({ t: options.title, b: options.body ?? null, l: options.link ?? null, ts: timestamp }),
   );
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
 
   const payload: ForumPostPayload = {
     v: 1,
     t: options.title,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
   };
   if (options.body) {
@@ -400,15 +435,15 @@ export async function publishForumPostFromInput(options: {
   );
   await publishToRelays(event, context.relays);
 
-  const postTag = derivePostTag(options.body ?? '', author.pubkeyHex, timestamp);
-  const replyKeypair = deriveReplyKeypair(options.body ?? '', author.pubkeyHex, timestamp);
+  const postTag = derivePostTag(options.body ?? '', inner.pubkeyHex, timestamp);
+  const replyKeypair = deriveReplyKeypair(options.body ?? '', inner.pubkeyHex, timestamp);
   return {
     event,
     topic,
     topicTag,
     postTag,
     replyPubkey: replyKeypair.pubkey,
-    authorPubkeyHex: author.pubkeyHex,
+    authorPubkeyHex: inner.pubkeyHex,
   };
 }
 
@@ -473,6 +508,7 @@ export async function publishForumReplyFromInput(options: {
   body: string;
   quotedReplyId?: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
@@ -492,19 +528,16 @@ export async function publishForumReplyFromInput(options: {
     throw new Error('Could not decrypt the target post.');
   }
 
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify({ b: options.body, ts: timestamp }));
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ForumReplyPayload = {
     v: 1,
     b: options.body,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
     ref: options.quotedReplyId,
   };
@@ -572,6 +605,7 @@ export async function publishForumTorrentFromInput(options: {
   forumInput: string;
   torrent: TorrentData;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
@@ -586,20 +620,17 @@ export async function publishForumTorrentFromInput(options: {
     throw new Error(`Torrent already exists (${checked.duplicate.reason} match: ${checked.duplicate.title}).`);
   }
 
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const topicTag = deriveTopicTag(context.forumPrivkey, TORRENT_TOPIC_SEED);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify(checked.torrent));
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
 
   const payload: ForumTorrentPayload = {
     v: 1,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
   };
 
@@ -740,6 +771,7 @@ export async function publishForumTorrentReplyFromInput(options: {
   body: string;
   quotedReplyId?: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
@@ -758,19 +790,16 @@ export async function publishForumTorrentReplyFromInput(options: {
     throw new Error('Could not decrypt the target torrent.');
   }
 
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const wrappedContent = wrapContentForSigning(JSON.stringify({ b: options.body, ts: timestamp }));
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ForumReplyPayload = {
     v: 1,
     b: options.body,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
     ref: options.quotedReplyId,
   };
@@ -838,24 +867,22 @@ export async function publishRoomAnnouncement(options: {
   roomName: string;
   accessCode: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning('room');
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ChatMessagePayload = {
     v: 1,
     b: '',
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
     room: { name: options.roomName, code: options.accessCode },
   };
@@ -897,25 +924,23 @@ export async function publishRoomChatMessage(options: {
   accessCode: string;
   message: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const { pubkey: roomPubkey } = deriveRoomKeypair(context.forumPrivkey, options.roomName, options.accessCode);
   const wrappedContent = wrapContentForSigning(options.message);
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ChatMessagePayload = {
     v: 1,
     b: options.message,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
     room: options.roomName,
   };
@@ -979,27 +1004,25 @@ export async function publishGeneralChatMessage(options: {
   forumInput: string;
   message: string;
   secret?: string;
+  signer?: CliSigner;
   sessionSecret?: string;
   relays?: string[];
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const sessionMaterial = options.sessionSecret ? describeSecret(options.sessionSecret) : await getForumSessionMaterial();
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning(options.message);
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ChatMessagePayload = {
     v: 1,
     b: options.message,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     sp: sessionMaterial.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
   };
 
@@ -1019,24 +1042,22 @@ export async function publishPrivateChatMessage(options: {
   recipientSessionPubkey: string;
   message: string;
   secret?: string;
+  signer?: CliSigner;
   relays?: string[];
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
-  const author = await resolveAuthor(options.secret);
+  const author = await resolveAuthor(options.secret, options.signer);
   const timestamp = Math.floor(Date.now() / 1000);
   const chatTag = deriveChatTag(context.forumPrivkey);
   const wrappedContent = wrapContentForSigning(options.message);
-  const inner = finalizeEvent(
-    { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
-    author.secretKey,
-  );
+  const inner = await signWrappedContent(author, wrappedContent, timestamp);
   const payload: ChatMessagePayload = {
     v: 1,
     b: options.message,
-    p: author.pubkeyHex,
+    p: inner.pubkeyHex,
     ts: timestamp,
-    sig: inner.sig,
+    sig: inner.signature,
     w: wrappedContent,
   };
 

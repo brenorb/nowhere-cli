@@ -5,12 +5,22 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
+import { startMockRelay } from '../support/mockRelay.js';
+import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
 const cwd = '/Users/breno/Documents/code/PROJECTS/HRF_GRANT/nowhere-cli';
 
 async function cli(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+  return JSON.parse(result.stdout);
+}
+
+async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+  });
   return JSON.parse(result.stdout);
 }
 
@@ -128,5 +138,62 @@ describe('builder creation and update commands', () => {
         expect(inspected.site.siteType).toBe('event');
       });
     });
+  });
+
+  test('sign, create, and update can use a persisted remote signer session', { timeout: 60000 }, async () => {
+    const relay = await startMockRelay();
+    const signer = await startMockNostrConnectSigner({ relayUrl: relay.url });
+
+    try {
+      const configHome = await mkdtemp(join(tmpdir(), 'nowhere-cli-signer-'));
+      const env = { XDG_CONFIG_HOME: configHome };
+
+      await cliWithEnv(env, 'signer', 'connect', '--bunker', signer.bunkerUri, '--json');
+
+      await withJsonFile({
+        pubkey: signer.npub,
+        name: 'Unsigned Store',
+        items: [{ name: 'Sticker', price: 2 }],
+      }, async (createPath) => {
+        const unsigned = await cliWithEnv(env, 'create', 'store', '--input', createPath, '--json');
+        const signed = await cliWithEnv(env, 'sign', unsigned.fragment, '--use-signer', '--json');
+        const verified = await cliWithEnv(env, 'verify', signed.signedFragment, '--json');
+
+        expect(verified.signed).toBe(true);
+        expect(verified.signaturePubkeyHex).toBe(signer.pubkeyHex);
+      });
+
+      await withJsonFile(
+        {
+          pubkey: signer.npub,
+          name: 'Remote Signer Store',
+          items: [{ name: 'Zine', price: 5 }],
+        },
+        async (storePath) => {
+          const created = await cliWithEnv(env, 'create', 'store', '--input', storePath, '--use-signer', '--json');
+          expect(created.signed).toBe(true);
+
+          await withJsonFile({ name: 'Remote Signer Store v2' }, async (patchPath) => {
+            const updated = await cliWithEnv(env, 'update', created.fragment, '--patch', patchPath, '--use-signer', '--json');
+            const inspected = await cliWithEnv(env, 'inspect', updated.fragment, '--json');
+
+            expect(inspected.site.name).toBe('Remote Signer Store v2');
+          });
+        },
+      );
+
+      const status = await cliWithEnv(env, 'signer', 'status', '--json');
+      expect(status.connected).toBe(true);
+      expect(status.pubkeyHex).toBe(signer.pubkeyHex);
+
+      await cliWithEnv(env, 'signer', 'disconnect', '--json');
+      const disconnected = await cliWithEnv(env, 'signer', 'status', '--json');
+      expect(disconnected.connected).toBe(false);
+
+      await rm(configHome, { recursive: true, force: true });
+    } finally {
+      await signer.close();
+      await relay.close();
+    }
   });
 });

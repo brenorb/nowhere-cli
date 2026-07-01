@@ -4,6 +4,7 @@ import { Filter } from 'nostr-tools/filter';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
 import { SimplePool } from 'nostr-tools/pool';
 import { type Event, finalizeEvent, generateSecretKey, getPublicKey, verifyEvent, type VerifiedEvent } from 'nostr-tools/pure';
+import type { CliSigner } from './active-signer.js';
 import { resolveSiteInput } from './fragments.js';
 import { parseSecretKeyInput } from './keys.js';
 
@@ -104,7 +105,8 @@ export interface DecryptedOrder {
 
 export interface FetchOrdersInput {
   storeUrl: string;
-  sellerSecret: string | Uint8Array;
+  sellerSecret?: string | Uint8Array;
+  sellerSigner?: CliSigner;
   relayList?: string[];
   since?: number;
   until?: number;
@@ -120,7 +122,8 @@ export interface FetchedOrders {
 
 export interface FetchOrdersByIdsInput {
   storeUrl: string;
-  sellerSecret: string | Uint8Array;
+  sellerSecret?: string | Uint8Array;
+  sellerSigner?: CliSigner;
   orderIds: string[];
   relayList?: string[];
 }
@@ -167,6 +170,7 @@ export interface VerifyStoreOrderPayloadOptions {
   storeUrl: string;
   payload: unknown;
   sellerSecret?: string | Uint8Array;
+  sellerSigner?: CliSigner;
   receivedSats?: number;
   storeRateOverride?: HistoricalRateResult;
   paymentRateOverride?: HistoricalRateResult;
@@ -178,7 +182,8 @@ export interface VerifiedStoreOrderPayload extends VerifiedStoreOrder {
 
 export interface PublishStatusInput {
   storeUrl: string;
-  sellerSecret: string | Uint8Array;
+  sellerSecret?: string | Uint8Array;
+  sellerSigner?: CliSigner;
   payload: StatusPayload;
   relayList?: string[];
   createdAt?: number;
@@ -698,6 +703,21 @@ export function decryptOrderEvent(event: Event, sellerSecret: string | Uint8Arra
   return parsed;
 }
 
+async function decryptOrderEventWithAccess(
+  event: Event,
+  sellerSecret?: string | Uint8Array,
+  sellerSigner?: CliSigner,
+): Promise<OrderMessage> {
+  const plaintext = sellerSigner
+    ? await sellerSigner.nip44Decrypt(event.pubkey, event.content)
+    : nip44Decrypt(event.content, getConversationKey(normalizeSecret(sellerSecret as string | Uint8Array), event.pubkey));
+  const parsed = JSON.parse(plaintext);
+  if (!isOrderMessage(parsed)) {
+    throw new Error('Decrypted content is not a valid Nowhere order.');
+  }
+  return parsed;
+}
+
 export function decryptOrderReceipt(receipt: string | OrderReceipt, sellerSecret: string | Uint8Array): DecryptedOrder {
   const parsedReceipt = typeof receipt === 'string' ? JSON.parse(receipt) : receipt;
   if (!isRecord(parsedReceipt) || parsedReceipt.v !== 1 || typeof parsedReceipt.p !== 'string' || typeof parsedReceipt.c !== 'string') {
@@ -720,10 +740,43 @@ export function decryptOrderReceipt(receipt: string | OrderReceipt, sellerSecret
   };
 }
 
+export async function decryptOrderReceiptWithAccess(
+  receipt: string | OrderReceipt,
+  sellerSecret?: string | Uint8Array,
+  sellerSigner?: CliSigner,
+): Promise<DecryptedOrder> {
+  const parsedReceipt = typeof receipt === 'string' ? JSON.parse(receipt) : receipt;
+  if (!isRecord(parsedReceipt) || parsedReceipt.v !== 1 || typeof parsedReceipt.p !== 'string' || typeof parsedReceipt.c !== 'string') {
+    throw new Error('Invalid Nowhere order receipt.');
+  }
+  if (!sellerSecret && !sellerSigner) {
+    throw new Error('Seller secret or active signer is required to decrypt a receipt.');
+  }
+
+  const eventJson = sellerSigner
+    ? await sellerSigner.nip44Decrypt(parsedReceipt.p, parsedReceipt.c)
+    : nip44Decrypt(parsedReceipt.c, getConversationKey(normalizeSecret(sellerSecret as string | Uint8Array), parsedReceipt.p));
+  const eventValue = JSON.parse(eventJson);
+  if (!isEvent(eventValue)) {
+    throw new Error('Receipt did not decrypt to a Nostr event.');
+  }
+  if (!verifyEvent(eventValue)) {
+    throw new Error('Receipt event signature verification failed.');
+  }
+
+  return {
+    event: eventValue,
+    order: await decryptOrderEventWithAccess(eventValue, sellerSecret, sellerSigner),
+  };
+}
+
 export async function fetchOrdersForSeller(
   input: FetchOrdersInput,
   relayClient: StoreRelayClient = defaultStoreRelayClient,
 ): Promise<FetchedOrders> {
+  if (!input.sellerSecret && !input.sellerSigner) {
+    throw new Error('Seller secret or active signer is required to fetch seller orders.');
+  }
   const context = await resolveStoreContext(input.storeUrl);
   const relays = resolveRelayList(input.relayList, getOrderRelays(context.storeTags));
   const filter: Filter = {
@@ -747,7 +800,7 @@ export async function fetchOrdersForSeller(
 
   for (const event of sortEventsDescending(await relayClient.fetchEvents(filter, relays))) {
     try {
-      const order = decryptOrderEvent(event, input.sellerSecret);
+      const order = await decryptOrderEventWithAccess(event, input.sellerSecret, input.sellerSigner);
       if (order.storeId !== context.lookupHash || seenOrderIds.has(order.orderId)) {
         continue;
       }
@@ -770,6 +823,9 @@ export async function fetchOrdersByIds(
   input: FetchOrdersByIdsInput,
   relayClient: StoreRelayClient = defaultStoreRelayClient,
 ): Promise<FetchedOrders> {
+  if (!input.sellerSecret && !input.sellerSigner) {
+    throw new Error('Seller secret or active signer is required to fetch seller orders.');
+  }
   const context = await resolveStoreContext(input.storeUrl);
   const relays = resolveRelayList(input.relayList, getOrderRelays(context.storeTags));
   const normalizedIds = [...new Set(input.orderIds.map((orderId) => orderId.trim().toLowerCase()).filter(Boolean))];
@@ -799,7 +855,7 @@ export async function fetchOrdersByIds(
 
     for (const event of events) {
       try {
-        const order = decryptOrderEvent(event, input.sellerSecret);
+        const order = await decryptOrderEventWithAccess(event, input.sellerSecret, input.sellerSigner);
         const normalizedOrderId = order.orderId.toLowerCase();
         if (
           order.storeId !== context.lookupHash
@@ -825,32 +881,33 @@ export async function fetchOrdersByIds(
   };
 }
 
-function parseOrderPayload(
+async function parseOrderPayload(
   payload: unknown,
   sellerSecret?: string | Uint8Array,
-): { order: OrderMessage; source: StoreVerificationSource } {
+  sellerSigner?: CliSigner,
+): Promise<{ order: OrderMessage; source: StoreVerificationSource }> {
   if (isRecord(payload) && payload.v === 1 && typeof payload.p === 'string' && typeof payload.c === 'string') {
-    if (!sellerSecret) {
-      throw new Error('Seller secret is required to verify a receipt payload.');
+    if (!sellerSecret && !sellerSigner) {
+      throw new Error('Seller secret or active signer is required to verify a receipt payload.');
     }
 
     return {
-      order: decryptOrderReceipt({
+      order: (await decryptOrderReceiptWithAccess({
         v: 1,
         p: payload.p,
         c: payload.c,
-      }, sellerSecret).order,
+      }, sellerSecret, sellerSigner)).order,
       source: 'receipt',
     };
   }
 
   if (isEvent(payload)) {
-    if (!sellerSecret) {
-      throw new Error('Seller secret is required to verify an encrypted order event.');
+    if (!sellerSecret && !sellerSigner) {
+      throw new Error('Seller secret or active signer is required to verify an encrypted order event.');
     }
 
     return {
-      order: decryptOrderEvent(payload, sellerSecret),
+      order: await decryptOrderEventWithAccess(payload, sellerSecret, sellerSigner),
       source: 'event',
     };
   }
@@ -963,7 +1020,7 @@ export async function verifyStoreOrder(
 export async function verifyStoreOrderPayload(
   input: VerifyStoreOrderPayloadOptions,
 ): Promise<VerifiedStoreOrderPayload> {
-  const { order, source } = parseOrderPayload(input.payload, input.sellerSecret);
+  const { order, source } = await parseOrderPayload(input.payload, input.sellerSecret, input.sellerSigner);
   return {
     source,
     ...(await verifyStoreOrder({
@@ -980,29 +1037,45 @@ export async function publishStoreStatus(
   input: PublishStatusInput,
   relayClient: StoreRelayClient = defaultStoreRelayClient,
 ): Promise<PublishedStatus> {
+  if (!input.sellerSecret && !input.sellerSigner) {
+    throw new Error('Seller secret or active signer is required to publish store status.');
+  }
   const context = await resolveStoreContext(input.storeUrl);
-  const sellerSecret = normalizeSecret(input.sellerSecret);
   const relays = resolveRelayList(input.relayList, getInventoryRelays(context.storeTags));
   const { pubkey: inventoryPubkey } = deriveInventoryKeypair(context.storeFragment);
-  const event = finalizeEvent(
-    {
-      kind: NOWHERE_APPLICATION_KIND,
-      created_at: input.createdAt ?? Math.floor(Date.now() / 1000),
-      content: nip44Encrypt(JSON.stringify(input.payload), getConversationKey(sellerSecret, inventoryPubkey)),
-      tags: [
-        ['d', `${NOWHERE_DTAG_PREFIX}/${context.lookupHash}`],
-        ['t', NOWHERE_T_TAG],
-      ],
-    },
-    sellerSecret,
-  );
+  const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
+  const content = input.sellerSigner
+    ? await input.sellerSigner.nip44Encrypt(inventoryPubkey, JSON.stringify(input.payload))
+    : nip44Encrypt(
+      JSON.stringify(input.payload),
+      getConversationKey(normalizeSecret(input.sellerSecret as string | Uint8Array), inventoryPubkey),
+    );
+  const unsigned = {
+    kind: NOWHERE_APPLICATION_KIND,
+    created_at: createdAt,
+    content,
+    tags: [
+      ['d', `${NOWHERE_DTAG_PREFIX}/${context.lookupHash}`],
+      ['t', NOWHERE_T_TAG],
+    ],
+  };
+  let signedEvent: VerifiedEvent;
+  if (input.sellerSigner) {
+    const candidate = await input.sellerSigner.signEvent(unsigned);
+    if (!verifyEvent(candidate)) {
+      throw new Error('Store status signer returned an invalid signature.');
+    }
+    signedEvent = candidate;
+  } else {
+    signedEvent = finalizeEvent(unsigned, normalizeSecret(input.sellerSecret as string | Uint8Array));
+  }
 
-  await relayClient.publish(event, relays, 'inventory status');
+  await relayClient.publish(signedEvent, relays, 'inventory status');
 
   return {
     context,
     relays,
-    event,
+    event: signedEvent,
     payload: input.payload,
   };
 }
