@@ -9,9 +9,11 @@
   "scripts": {
     "build": "tsup",
     "cli": "tsx src/cli.ts",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" tsup.config.ts vitest.config.ts",
+    "lint:fix": "eslint --fix \"src/**/*.ts\" \"tests/**/*.ts\" tsup.config.ts vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
@@ -21,11 +23,15 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
     "tsup": "^8.5.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.62.1",
     "vitest": "^3.2.4"
   }
 }

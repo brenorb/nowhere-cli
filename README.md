@@ -13,6 +13,7 @@ Current scope in this first slice:
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
 - relay-backed CLI commands for store management, petition signing/owner review, and full forum activity management
+- forum voice signaling publish/list flows that mirror the website's Nostr signaling layer for general, room, and private channels
 - forum torrent authoring from real `.torrent` files, including duplicate preflight checks and publish-time normalization
 - store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
@@ -35,6 +36,8 @@ pnpm cli pubkey --secret nsec1...
 pnpm cli inspect 'https://hostednowhere.com/s#...'
 pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
 pnpm cli signer connect --bunker 'bunker://...' --json
+pnpm cli signer start --relay wss://bucket.coracle.social --json
+pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
 pnpm cli create store --input ./store.json --use-signer --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
@@ -64,6 +67,12 @@ pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --jso
 - Use tag objects like `{ "key": "V", "value": null }` for boolean tags that the web app stores without a value.
 - `update` imports an existing site, merges the patch object, then re-encodes it through the upstream codec.
 
+### Understanding tags
+
+Nowhere tags are the compact internal config format behind the website UI. The CLI exposes them directly because it accepts the upstream codec shape, while the website usually collects the same information through normal form fields and writes the tags for you.
+
+For the full per-tool tag mapping, CLI-injected defaults, and the explanation of which tags change rendering versus runtime behavior, see [docs/tags.md](docs/tags.md).
+
 ## Relay Runtimes
 
 The CLI now includes upstream-compatible runtime modules for the parts of Nowhere that use Nostr relays after site creation:
@@ -83,11 +92,13 @@ Those modules are covered with e2e tests against the local mock relay in `tests/
 The CLI now exposes the main relay-backed workflows directly:
 
 - `store order`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `store status fetch`
+- `store manage state`, `store manage status`, `store manage confirm`, `store manage unconfirm`, `store manage hide`, `store manage unhide`, `store manage note`, `store manage reconcile`
 - `store checkout quote`, `store checkout begin`
 - `fundraiser donate methods`, `fundraiser donate invoice`
 - `message tip methods`, `message tip invoice`
 - `petition sign`, `petition count`, `petition signatures`
 - `forum post`, `forum posts`, `forum reply`, `forum replies`, `forum torrent publish`, `forum torrent reply`, `forum torrent replies`, `forum torrents`, `forum room announce`, `forum room announcements`, `forum room send`, `forum room list`, `forum chat send`, `forum chat list`, `forum private send`, `forum private list`, `forum wot check`
+- `forum voice send`, `forum voice list`
 - `forum torrent parse` reads a real `.torrent` file and extracts the infohash, inferred title, file list, and deduplicated tracker set the same way the website does.
 - `forum torrent check` runs the website-style submission preflight against a forum: torrent feature enabled via `b`, normalized category path, fixed-root enforcement via `F`/`q`, and duplicate detection by infohash then case-insensitive title.
 - `forum torrent publish` now accepts either `--input <json>` for raw agent-authored payloads or `--torrent-file <path>` plus `--category`, with optional `--title`, `--description`, repeated `--tracker`, and repeated `--ref`.
@@ -96,11 +107,13 @@ Publish-style commands accept structured JSON via `--input <path>` or `--input -
 
 Any runtime command that opens a store, petition, fundraiser, message, or forum now also accepts `--password <password>` so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site.
 
-`signer connect`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
+`signer connect`, `signer start`, `signer wait`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `signer start` when you need a generated `nostrconnect://` deeplink or QR payload first, then complete pairing with `signer wait`. `signer connect` and `signer wait` both surface `authUrl` when the signer requires an out-of-band approval step. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
 
 Encrypted fragments are accepted as normal positional arguments even when the base64url payload begins with `-`, so agents do not need to prepend `--` manually when opening encrypted store, petition, fundraiser, message, or forum links.
 
 `store order` accepts the same human-facing totals the website computes in major units and converts them to the wire-format cent fields before publishing. `store orders` also accepts repeated `--order-id <id>` values for targeted lookups, and `store verify` can validate a receipt, encrypted order event, or plaintext order JSON against the store's shipping, discount, and historical-rate rules.
+
+`store manage *` mirrors the website's seller-side local bookkeeping: attach statuses, payment confirmations, hidden flags, private notes, and pasted-text reconciliation to fetched order ids. That state is persisted under `XDG_CONFIG_HOME/nowhere-cli/store-manage.json`, `store orders --json` includes the current local overlay for each returned order, and `store orders --csv` exports the same `Status` and `Confirmed` overlay columns alongside the order data.
 
 `store checkout quote` mirrors the website's preflight: it calculates subtotal, shipping, discount, total, buyer-field requirements, allowed/excluded countries, payment-method availability, and inventory gating from the current encrypted status payload when tag `k` is enabled. `store checkout begin` then publishes the order and returns either a Lightning invoice or manual payment instructions, depending on the chosen method.
 
@@ -110,7 +123,11 @@ Anonymous forum posts, replies, torrent submissions, room flows, and general cha
 
 `forum chat send` accepts `--session-secret` to override the advertised stable session pubkey that the website uses for private chat routing. Without it, the CLI advertises the persisted forum session automatically. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for either the persisted session or an explicit `--session-secret`.
 
-`forum posts`, `forum replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
+`forum voice send` and `forum voice list` expose the website's relay-side voice signaling layer for agents. They publish and inspect `join`, `leave`, `offer`, `answer`, `ice`, and `mute` signals across the `general`, `room`, and `private` channels, including signed join proofs and persisted session identities.
+
+The forum list surfaces also support CLI-native follow mode: pass `--watch` to keep polling until interrupted, or `--watch-seconds <n>` to stream newline-delimited JSON records for a bounded programmatic window. That parity now covers posts, replies, torrent replies, torrents, room announcements, room chat, general chat, private chat, and voice signals.
+
+`forum posts`, `forum replies`, `forum torrent replies`, `forum torrents`, `forum chat list`, and `forum room list` now accept `--moderated` so agents can ask for the same WoT/banned-word filtered view the website renders. `forum posts` also supports `--search`, `--date`, `--type`, and `--sort`, while `forum torrents` supports `--search`, `--date`, `--author`, `--category`, `--min-bytes`, `--max-bytes`, `--sort`, and `--order` for CLI-native browse parity. `forum wot check` exposes the underlying author-eligibility decision directly for the `post`, `reply`, `chat`, and `torrent` scopes.
 
 `petition sign` now enforces the petition's own required-field tags and country restrictions before it spends time encrypting, computing proof-of-work, and publishing.
 

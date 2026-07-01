@@ -28,7 +28,7 @@ export interface PetitionRelayTransport {
   count?(filter: Filter, relays: string[]): Promise<number>;
 }
 
-export interface PetitionSignaturePayload extends Record<string, unknown> {}
+export type PetitionSignaturePayload = Record<string, unknown>;
 
 export interface PublishPetitionSignatureOptions<TPayload extends PetitionSignaturePayload> {
   payload: TPayload;
@@ -202,6 +202,46 @@ export async function petitionDTagFromFragment(fragment: string): Promise<string
   return petitionDTag(await computePetitionHash(fragment));
 }
 
+async function fetchPetitionEventsPaginated(
+  transport: PetitionRelayTransport,
+  dTag: string,
+  relays: string[],
+): Promise<Event[]> {
+  const pageLimit = 5000;
+  const seen = new Set<string>();
+  const events: Event[] = [];
+  let until: number | undefined;
+
+  while (true) {
+    const batch = await transport.fetch(
+      {
+        ...buildPetitionFilter(dTag),
+        limit: pageLimit,
+        ...(until !== undefined ? { until } : {}),
+      },
+      relays,
+    );
+    if (batch.length === 0) {
+      break;
+    }
+
+    const fresh = batch.filter((event) => !seen.has(event.id));
+    for (const event of fresh) {
+      seen.add(event.id);
+      events.push(event);
+    }
+
+    const oldest = batch.reduce((min, event) => Math.min(min, event.created_at), Number.POSITIVE_INFINITY);
+    const nextUntil = oldest - 1;
+    if (until !== undefined && nextUntil >= until) {
+      break;
+    }
+    until = nextUntil;
+  }
+
+  return events;
+}
+
 export function createSimplePoolPetitionTransport(pool = new SimplePool()): PetitionRelayTransport {
   return {
     async publish(event, relays) {
@@ -360,7 +400,7 @@ export async function fetchPetitionSignaturesForOwner<TPayload extends PetitionS
   }
   const ownerSecretKey = options.ownerSecret ? parseSecretKeyInput(options.ownerSecret) : null;
   const powDifficulty = options.powDifficulty ?? POW_DIFFICULTY;
-  const rawEvents = await transport.fetch(buildPetitionFilter(dTag), options.relays);
+  const rawEvents = await fetchPetitionEventsPaginated(transport, dTag, options.relays);
 
   const dedupedByPubkey = new Map<string, Event>();
   for (const event of rawEvents) {

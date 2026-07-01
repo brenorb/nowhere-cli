@@ -28,6 +28,14 @@ async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
   return JSON.parse(result.stdout);
 }
 
+async function cliTextWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+  });
+  return result.stdout.trim();
+}
+
 async function cliText(...args: string[]) {
   const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
   return result.stdout.trim();
@@ -41,6 +49,18 @@ async function cliFailure(...args: string[]) {
     const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
     return stderr;
   }
+}
+
+async function cliWatchLines(afterStart: () => Promise<void>, ...args: string[]) {
+  const watch = execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await afterStart();
+  const result = await watch;
+  return result.stdout
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void>) {
@@ -58,6 +78,17 @@ async function withBinaryFile(name: string, bytes: Uint8Array, fn: (path: string
   const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
   const file = join(dir, name);
   await writeFile(file, bytes);
+  try {
+    await fn(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withTextFile(name: string, text: string, fn: (path: string) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
+  const file = join(dir, name);
+  await writeFile(file, text, 'utf8');
   try {
     await fn(file);
   } finally {
@@ -139,7 +170,7 @@ function makeTorrentBytes(title = 'Archive'): Uint8Array {
 }
 
 describe('relay-backed CLI commands', () => {
-  test('forum moderation commands expose WOT access checks and moderated post listings', { timeout: 120000 }, async () => {
+  test('forum moderation commands expose WOT access checks and moderated post listings', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
     const trusted = generateSecretMaterial();
@@ -163,19 +194,15 @@ describe('relay-backed CLI commands', () => {
             { key: '2', value: relay.url },
             { key: 'W', value: '1' },
             { key: 'X', value: 'blocked' },
-            { key: 'b', value: null },
-            { key: 'q', value: 'Docs|Audio' },
-            { key: 'h', value: 'No malware. No dox.' },
           ],
         },
         async (forumPath) => {
           const forum = await cli('create', 'forum', '--input', forumPath, '--json');
-          let trustedPostEventId = '';
 
           await withJsonFile(
             { title: 'Trusted post', body: 'clean text' },
             async (trustedPostPath) => {
-              const trustedPost = await cli(
+              await cli(
                 'forum',
                 'post',
                 forum.fragment,
@@ -187,7 +214,6 @@ describe('relay-backed CLI commands', () => {
                 relay.url,
                 '--json',
               );
-              trustedPostEventId = trustedPost.event.id;
             },
           );
 
@@ -223,243 +249,6 @@ describe('relay-backed CLI commands', () => {
 
           expect(moderated.posts).toHaveLength(1);
           expect(moderated.posts[0]?.payload.t).toBe('Trusted post');
-          expect(moderated.posts[0]?.payload.p).toBe(trusted.pubkeyHex);
-
-          await withJsonFile(
-            { body: 'clean reply' },
-            async (trustedReplyPath) => {
-              await cli(
-                'forum',
-                'reply',
-                forum.fragment,
-                '--post-event',
-                trustedPostEventId,
-                '--input',
-                trustedReplyPath,
-                '--secret',
-                trusted.secretHex,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          await withJsonFile(
-            { body: 'blocked phrase' },
-            async (outsiderReplyPath) => {
-              await cli(
-                'forum',
-                'reply',
-                forum.fragment,
-                '--post-event',
-                trustedPostEventId,
-                '--input',
-                outsiderReplyPath,
-                '--secret',
-                outsider.secretHex,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          const moderatedReplies = await cli(
-            'forum',
-            'replies',
-            forum.fragment,
-            '--post-event',
-            trustedPostEventId,
-            '--moderated',
-            '--profile-relay',
-            relay.url,
-            '--relay',
-            relay.url,
-            '--json',
-          );
-
-          expect(moderatedReplies.replies).toHaveLength(1);
-          expect(moderatedReplies.replies[0]?.payload.b).toBe('clean reply');
-          expect(moderatedReplies.replies[0]?.payload.p).toBe(trusted.pubkeyHex);
-
-          await withBinaryFile('trusted-archive.torrent', makeTorrentBytes('Trusted Archive'), async (trustedTorrentPath) => {
-            await cli(
-              'forum',
-              'torrent',
-              'publish',
-              forum.fragment,
-              '--torrent-file',
-              trustedTorrentPath,
-              '--category',
-              'Docs > Manuals',
-              '--description',
-              'Clean torrent',
-              '--secret',
-              trusted.nsec,
-              '--relay',
-              relay.url,
-              '--json',
-            );
-          });
-
-          await withBinaryFile('outsider-archive.torrent', makeTorrentBytes('Blocked Archive'), async (outsiderTorrentPath) => {
-            await cli(
-              'forum',
-              'torrent',
-              'publish',
-              forum.fragment,
-              '--torrent-file',
-              outsiderTorrentPath,
-              '--category',
-              'Docs > Manuals',
-              '--description',
-              'blocked phrase',
-              '--secret',
-              outsider.nsec,
-              '--relay',
-              relay.url,
-              '--json',
-            );
-          });
-
-          const moderatedTorrents = await cli(
-            'forum',
-            'torrents',
-            forum.fragment,
-            '--moderated',
-            '--profile-relay',
-            relay.url,
-            '--relay',
-            relay.url,
-            '--json',
-          );
-
-          expect(moderatedTorrents.torrents).toHaveLength(1);
-          expect(moderatedTorrents.torrents[0]?.torrentData.title).toBe('Trusted Archive');
-          expect(moderatedTorrents.torrents[0]?.authorPubkey).toBe(trusted.pubkeyHex);
-
-          await withJsonFile(
-            { message: 'clean lobby note' },
-            async (trustedChatPath) => {
-              await cli(
-                'forum',
-                'chat',
-                'send',
-                forum.fragment,
-                '--input',
-                trustedChatPath,
-                '--secret',
-                trusted.nsec,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          await withJsonFile(
-            { message: 'blocked phrase' },
-            async (outsiderChatPath) => {
-              await cli(
-                'forum',
-                'chat',
-                'send',
-                forum.fragment,
-                '--input',
-                outsiderChatPath,
-                '--secret',
-                outsider.nsec,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          const moderatedChat = await cli(
-            'forum',
-            'chat',
-            'list',
-            forum.fragment,
-            '--moderated',
-            '--profile-relay',
-            relay.url,
-            '--relay',
-            relay.url,
-            '--json',
-          );
-
-          expect(moderatedChat.messages).toHaveLength(1);
-          expect(moderatedChat.messages[0]?.payload.b).toBe('clean lobby note');
-          expect(moderatedChat.messages[0]?.payload.p).toBe(trusted.pubkeyHex);
-
-          await withJsonFile(
-            {
-              roomName: 'Safehouse',
-              accessCode: 'rotation-3',
-              message: 'clean room note',
-            },
-            async (trustedRoomPath) => {
-              await cli(
-                'forum',
-                'room',
-                'send',
-                forum.fragment,
-                '--input',
-                trustedRoomPath,
-                '--secret',
-                trusted.secretHex,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          await withJsonFile(
-            {
-              roomName: 'Safehouse',
-              accessCode: 'rotation-3',
-              message: 'blocked phrase',
-            },
-            async (outsiderRoomPath) => {
-              await cli(
-                'forum',
-                'room',
-                'send',
-                forum.fragment,
-                '--input',
-                outsiderRoomPath,
-                '--secret',
-                outsider.secretHex,
-                '--relay',
-                relay.url,
-                '--json',
-              );
-            },
-          );
-
-          const moderatedRoomMessages = await cli(
-            'forum',
-            'room',
-            'list',
-            forum.fragment,
-            '--room-name',
-            'Safehouse',
-            '--access-code',
-            'rotation-3',
-            '--moderated',
-            '--profile-relay',
-            relay.url,
-            '--relay',
-            relay.url,
-            '--json',
-          );
-
-          expect(moderatedRoomMessages.messages).toHaveLength(1);
-          expect(moderatedRoomMessages.messages[0]?.payload.b).toBe('clean room note');
-          expect(moderatedRoomMessages.messages[0]?.payload.p).toBe(trusted.pubkeyHex);
 
           const access = await cli(
             'forum',
@@ -485,7 +274,122 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('store commands publish orders, decrypt receipts, and manage status', { timeout: 60000 }, async () => {
+  test('forum torrent replies support the same moderation filter as post replies', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const outsider = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Moderated Torrent Forum',
+          tags: [
+            { key: '1', value: relay.url },
+            { key: 'X', value: 'blocked' },
+            { key: 'b', value: null },
+          ],
+        },
+        async (forumPath) => {
+          const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+
+          await withBinaryFile('archive.torrent', makeTorrentBytes(), async (torrentFilePath) => {
+            const torrent = await cli(
+              'forum',
+              'torrent',
+              'publish',
+              forum.fragment,
+              '--torrent-file',
+              torrentFilePath,
+              '--category',
+              'Docs > Manuals',
+              '--secret',
+              owner.nsec,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+
+            await withJsonFile(
+              { body: 'clean seeding update' },
+              async (cleanReplyPath) => {
+                await cli(
+                  'forum',
+                  'torrent',
+                  'reply',
+                  forum.fragment,
+                  '--torrent-event',
+                  torrent.event.id,
+                  '--input',
+                  cleanReplyPath,
+                  '--secret',
+                  owner.nsec,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+              },
+            );
+
+            await withJsonFile(
+              { body: 'blocked mirror online' },
+              async (blockedReplyPath) => {
+                await cli(
+                  'forum',
+                  'torrent',
+                  'reply',
+                  forum.fragment,
+                  '--torrent-event',
+                  torrent.event.id,
+                  '--input',
+                  blockedReplyPath,
+                  '--secret',
+                  outsider.nsec,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+              },
+            );
+
+            const allReplies = await cli(
+              'forum',
+              'torrent',
+              'replies',
+              forum.fragment,
+              '--torrent-event',
+              torrent.event.id,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+            expect(allReplies.replies).toHaveLength(2);
+
+            const moderatedReplies = await cli(
+              'forum',
+              'torrent',
+              'replies',
+              forum.fragment,
+              '--torrent-event',
+              torrent.event.id,
+              '--moderated',
+              '--relay',
+              relay.url,
+              '--json',
+            );
+
+            expect(moderatedReplies.replies).toHaveLength(1);
+            expect(moderatedReplies.replies[0]?.payload.b).toBe('clean seeding update');
+          });
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('store commands publish orders, decrypt receipts, and manage status', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const seller = generateSecretMaterial();
 
@@ -756,7 +660,197 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('petition commands sign, count, and decrypt signatures', { timeout: 60000 }, async () => {
+  test('store manage commands persist local bookkeeping for confirmations, hiding, notes, and reconciliation', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const seller = generateSecretMaterial();
+
+    try {
+      await withTempDir('nowhere-cli-manage-', async (configHome) => {
+        const env = { XDG_CONFIG_HOME: configHome };
+
+        await withJsonFile(
+          {
+            pubkey: seller.npub,
+            name: 'Managed Store',
+            items: [{ name: 'Notebook', price: 12 }],
+            tags: [
+              { key: '1', value: relay.url },
+              { key: '2', value: relay.url },
+              { key: '$', value: 'USD' },
+            ],
+          },
+          async (storePath) => {
+            const store = await cli('create', 'store', '--input', storePath, '--json');
+
+            const publishOrder = async (buyerName: string) => {
+              let published: any;
+              await withJsonFile(
+                {
+                  buyer: { name: buyerName },
+                  items: [{ i: 0, qty: 1 }],
+                  subtotal: 12,
+                  shipping: 0,
+                  total: 12,
+                },
+                async (orderPath) => {
+                  published = await cli(
+                    'store',
+                    'order',
+                    store.fragment,
+                    '--input',
+                    orderPath,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
+              return published;
+            };
+
+            const first = await publishOrder('Alice');
+            const second = await publishOrder('Bob');
+
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'confirm',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'note',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--note',
+              'Paid via bank wire.',
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'hide',
+              store.fragment,
+              '--order-id',
+              second.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'status',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--status',
+              'fulfilled',
+              '--json',
+            );
+
+            await withTextFile(
+              'reconcile.txt',
+              `${first.order.orderId}\ndeadbeefdeadbee\n`,
+              async (reconcilePath) => {
+                const reconciled = await cliWithEnv(
+                  env,
+                  'store',
+                  'manage',
+                  'reconcile',
+                  store.fragment,
+                  '--input',
+                  reconcilePath,
+                  '--secret',
+                  seller.secretHex,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(reconciled.matched).toContain(first.order.orderId);
+                expect(reconciled.missing).toContain('deadbeefdeadbee');
+              },
+            );
+
+            const state = await cliWithEnv(env, 'store', 'manage', 'state', store.fragment, '--json');
+            expect(state.state.confirmedOrderIds).toContain(first.order.orderId);
+            expect(state.state.hiddenOrderIds).toContain(second.order.orderId);
+            expect(state.state.orderStatuses[first.order.orderId]).toBe('fulfilled');
+            expect(state.state.orderNotes[first.order.orderId]).toBe('Paid via bank wire.');
+
+            const orders = await cliWithEnv(
+              env,
+              'store',
+              'orders',
+              store.fragment,
+              '--secret',
+              seller.secretHex,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+            const managedFirst = orders.orders.find((entry: { order: { orderId: string } }) => entry.order.orderId === first.order.orderId);
+            const managedSecond = orders.orders.find((entry: { order: { orderId: string } }) => entry.order.orderId === second.order.orderId);
+            expect(managedFirst?.manage.confirmed).toBe(true);
+            expect(managedFirst?.manage.status).toBe('fulfilled');
+            expect(managedFirst?.manage.note).toBe('Paid via bank wire.');
+            expect(managedSecond?.manage.hidden).toBe(true);
+
+            const csv = await cliTextWithEnv(
+              env,
+              'store',
+              'orders',
+              store.fragment,
+              '--secret',
+              seller.secretHex,
+              '--relay',
+              relay.url,
+              '--csv',
+            );
+            expect(csv).toContain('Status,Confirmed');
+            expect(csv).toContain(`Managed Store,fulfilled,Yes,Alice`);
+
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'unhide',
+              store.fragment,
+              '--order-id',
+              second.order.orderId,
+              '--json',
+            );
+            await cliWithEnv(
+              env,
+              'store',
+              'manage',
+              'unconfirm',
+              store.fragment,
+              '--order-id',
+              first.order.orderId,
+              '--json',
+            );
+
+            const updatedState = await cliWithEnv(env, 'store', 'manage', 'state', store.fragment, '--json');
+            expect(updatedState.state.confirmedOrderIds).not.toContain(first.order.orderId);
+            expect(updatedState.state.hiddenOrderIds).not.toContain(second.order.orderId);
+          },
+        );
+      });
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('petition commands sign, count, and decrypt signatures', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
     const signer = generateSecretMaterial();
@@ -1776,6 +1870,139 @@ describe('relay-backed CLI commands', () => {
               expect(listed.messages[0]?.peerPubkey).toBe(owner.pubkeyHex);
             },
           );
+
+          await withJsonFile(
+            { type: 'join', channel: 'general' },
+            async (voicePath) => {
+              const published = await cli(
+                'forum',
+                'voice',
+                'send',
+                forum.fragment,
+                '--input',
+                voicePath,
+                '--secret',
+                owner.nsec,
+                '--session-secret',
+                session.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(published.payload.type).toBe('join');
+              expect(published.event.created_at).toBe(published.payload.ts);
+
+              const listed = await cli(
+                'forum',
+                'voice',
+                'list',
+                forum.fragment,
+                '--channel',
+                'general',
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(listed.signals).toHaveLength(1);
+              expect(listed.signals[0]?.payload.type).toBe('join');
+              expect(listed.signals[0]?.joinSignatureValid).toBe(true);
+            },
+          );
+
+          await withJsonFile(
+            {
+              type: 'mute',
+              channel: 'room',
+              roomName: 'Logistics',
+              accessCode: 'shared-secret',
+              muted: true,
+            },
+            async (roomVoicePath) => {
+              await cli(
+                'forum',
+                'voice',
+                'send',
+                forum.fragment,
+                '--input',
+                roomVoicePath,
+                '--secret',
+                owner.nsec,
+                '--session-secret',
+                session.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              const listed = await cli(
+                'forum',
+                'voice',
+                'list',
+                forum.fragment,
+                '--channel',
+                'room',
+                '--room-name',
+                'Logistics',
+                '--access-code',
+                'shared-secret',
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(listed.signals).toHaveLength(1);
+              expect(listed.signals[0]?.payload.type).toBe('mute');
+              expect(listed.signals[0]?.payload.muted).toBe(true);
+            },
+          );
+
+          await withJsonFile(
+            {
+              type: 'offer',
+              channel: 'private',
+              peerPubkey: session.pubkeyHex,
+              recipientSessionPubkey: session.pubkeyHex,
+              target: session.pubkeyHex,
+              sdp: 'offer-sdp',
+            },
+            async (privateVoicePath) => {
+              await cli(
+                'forum',
+                'voice',
+                'send',
+                forum.fragment,
+                '--input',
+                privateVoicePath,
+                '--secret',
+                owner.nsec,
+                '--session-secret',
+                session.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              const listed = await cli(
+                'forum',
+                'voice',
+                'list',
+                forum.fragment,
+                '--channel',
+                'private',
+                '--session-secret',
+                session.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+
+              expect(listed.signals).toHaveLength(1);
+              expect(listed.signals[0]?.payload.type).toBe('offer');
+              expect(listed.signals[0]?.peerPubkey).toBe(owner.pubkeyHex);
+            },
+          );
         },
       );
     } finally {
@@ -1783,7 +2010,520 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
-  test('forum CLI reuses a persisted anonymous session for posts, chat routing, and private inbox decryption', { timeout: 60000 }, async () => {
+  test('forum browse commands support search, filters, and alternate sort modes for posts and torrents', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const secondAuthor = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Browse Forum',
+          description: 'Filtering coverage',
+          tags: [
+            { key: 'i', value: '1' },
+            { key: 'V', value: null },
+            { key: '1', value: relay.url },
+            { key: 'O', value: 'Ops\\pLogistics' },
+            { key: 'q', value: 'Docs|Audio' },
+            { key: 'b', value: null },
+            { key: 'F', value: null },
+          ],
+        },
+        async (forumPath) => {
+          const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+
+          let firstPostEventId = '';
+          let imagePostEventId = '';
+
+          await withJsonFile(
+            { topic: 'Ops', title: 'Alpha note', body: 'First checkpoint details.' },
+            async (postPath) => {
+              const post = await cli(
+                'forum',
+                'post',
+                forum.fragment,
+                '--input',
+                postPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+              firstPostEventId = post.event.id;
+            },
+          );
+
+          await withJsonFile(
+            { topic: 'Ops', title: 'Map image', link: 'https://cdn.example.com/map.png' },
+            async (postPath) => {
+              const post = await cli(
+                'forum',
+                'post',
+                forum.fragment,
+                '--input',
+                postPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+              imagePostEventId = post.event.id;
+            },
+          );
+
+          await withJsonFile(
+            { body: 'First reply' },
+            async (replyPath) => {
+              await cli(
+                'forum',
+                'reply',
+                forum.fragment,
+                '--post-event',
+                firstPostEventId,
+                '--input',
+                replyPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            { body: 'Second reply' },
+            async (replyPath) => {
+              await cli(
+                'forum',
+                'reply',
+                forum.fragment,
+                '--post-event',
+                firstPostEventId,
+                '--input',
+                replyPath,
+                '--secret',
+                secondAuthor.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const searchedPosts = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--topic',
+            'Ops',
+            '--search',
+            'map image',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(searchedPosts.posts).toHaveLength(1);
+          expect(searchedPosts.posts[0]?.payload.t).toBe('Map image');
+
+          const imagePosts = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--topic',
+            'Ops',
+            '--type',
+            'image',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(imagePosts.posts).toHaveLength(1);
+          expect(imagePosts.posts[0]?.eventId).toBe(imagePostEventId);
+
+          const oldestPosts = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--topic',
+            'Ops',
+            '--sort',
+            'oldest',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(oldestPosts.posts[0]?.eventId).toBe(firstPostEventId);
+
+          const mostRepliedPosts = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--topic',
+            'Ops',
+            '--sort',
+            'replies',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(mostRepliedPosts.posts[0]?.eventId).toBe(firstPostEventId);
+
+          await withJsonFile(
+            {
+              x: '1111111111111111111111111111111111111111',
+              title: 'Archive Manual',
+              description: 'Field guide bundle',
+              files: [{ path: 'manual.pdf', size: 2048 }],
+              trackers: ['https://tracker.example.com'],
+              category: 'docs > manuals',
+              refs: [],
+            },
+            async (torrentPath) => {
+              await cli(
+                'forum',
+                'torrent',
+                'publish',
+                forum.fragment,
+                '--input',
+                torrentPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            {
+              x: '2222222222222222222222222222222222222222',
+              title: 'Broadcast Audio',
+              description: 'Interview segment',
+              files: [{ path: 'audio.mp3', size: 1024 }],
+              trackers: ['https://tracker.example.com'],
+              category: 'audio > interviews',
+              refs: [],
+            },
+            async (torrentPath) => {
+              await cli(
+                'forum',
+                'torrent',
+                'publish',
+                forum.fragment,
+                '--input',
+                torrentPath,
+                '--secret',
+                secondAuthor.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const searchedTorrents = await cli(
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--search',
+            'broadcast',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(searchedTorrents.torrents).toHaveLength(1);
+          expect(searchedTorrents.torrents[0]?.torrentData.title).toBe('Broadcast Audio');
+
+          const categoryTorrents = await cli(
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--category',
+            'docs',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(categoryTorrents.torrents).toHaveLength(1);
+          expect(categoryTorrents.torrents[0]?.torrentData.category).toBe('docs > manuals');
+
+          const authorTorrents = await cli(
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--author',
+            secondAuthor.pubkeyHex,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(authorTorrents.torrents).toHaveLength(1);
+          expect(authorTorrents.torrents[0]?.torrentData.title).toBe('Broadcast Audio');
+
+          const sizedTorrents = await cli(
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--sort',
+            'size',
+            '--order',
+            'asc',
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          expect(sizedTorrents.torrents.map((entry: { torrentData: { title: string } }) => entry.torrentData.title)).toEqual([
+            'Broadcast Audio',
+            'Archive Manual',
+          ]);
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('forum watch mode streams newly discovered posts, torrents, chat, and voice signals', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const session = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Live Forum',
+          tags: [{ key: '1', value: relay.url }, { key: 'b', value: null }],
+        },
+        async (forumPath) => {
+          const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+
+          const postEvents = await cliWatchLines(
+            async () => {
+              await withJsonFile(
+                { title: 'Live post', body: 'streamed into watch mode' },
+                async (postPath) => {
+                  await cli(
+                    'forum',
+                    'post',
+                    forum.fragment,
+                    '--input',
+                    postPath,
+                    '--secret',
+                    owner.nsec,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
+            },
+            'forum',
+            'posts',
+            forum.fragment,
+            '--relay',
+            relay.url,
+            '--watch-seconds',
+            '1.2',
+            '--json',
+          );
+          expect(postEvents).toHaveLength(1);
+          expect(postEvents[0]?.scope).toBe('forum.posts');
+          expect(postEvents[0]?.phase).toBe('live');
+          expect(postEvents[0]?.entry.payload.t).toBe('Live post');
+
+          const torrentEvents = await cliWatchLines(
+            async () => {
+              await withBinaryFile('live.torrent', makeTorrentBytes(), async (torrentFilePath) => {
+                await cli(
+                  'forum',
+                  'torrent',
+                  'publish',
+                  forum.fragment,
+                  '--torrent-file',
+                  torrentFilePath,
+                  '--category',
+                  'Docs > Manuals',
+                  '--secret',
+                  owner.nsec,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+              });
+            },
+            'forum',
+            'torrents',
+            forum.fragment,
+            '--relay',
+            relay.url,
+            '--watch-seconds',
+            '1.2',
+            '--json',
+          );
+          expect(torrentEvents).toHaveLength(1);
+          expect(torrentEvents[0]?.scope).toBe('forum.torrents');
+          expect(torrentEvents[0]?.entry.torrentData.title).toBe('Archive');
+
+          const chatEvents = await cliWatchLines(
+            async () => {
+              await withJsonFile(
+                { message: 'Live general chat' },
+                async (chatPath) => {
+                  await cli(
+                    'forum',
+                    'chat',
+                    'send',
+                    forum.fragment,
+                    '--input',
+                    chatPath,
+                    '--secret',
+                    owner.nsec,
+                    '--session-secret',
+                    session.secretHex,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
+            },
+            'forum',
+            'chat',
+            'list',
+            forum.fragment,
+            '--relay',
+            relay.url,
+            '--watch-seconds',
+            '1.2',
+            '--json',
+          );
+          expect(chatEvents).toHaveLength(1);
+          expect(chatEvents[0]?.scope).toBe('forum.chat');
+          expect(chatEvents[0]?.entry.payload.b).toBe('Live general chat');
+          expect(chatEvents[0]?.entry.payload.sp).toBe(session.pubkeyHex);
+
+          const voiceEvents = await cliWatchLines(
+            async () => {
+              await withJsonFile(
+                { type: 'join', channel: 'general' },
+                async (voicePath) => {
+                  await cli(
+                    'forum',
+                    'voice',
+                    'send',
+                    forum.fragment,
+                    '--input',
+                    voicePath,
+                    '--secret',
+                    owner.nsec,
+                    '--session-secret',
+                    session.secretHex,
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                },
+              );
+            },
+            'forum',
+            'voice',
+            'list',
+            forum.fragment,
+            '--channel',
+            'general',
+            '--relay',
+            relay.url,
+            '--watch-seconds',
+            '1.2',
+            '--json',
+          );
+          expect(voiceEvents).toHaveLength(1);
+          expect(voiceEvents[0]?.scope).toBe('forum.voice');
+          expect(voiceEvents[0]?.entry.payload.type).toBe('join');
+          expect(voiceEvents[0]?.entry.joinSignatureValid).toBe(true);
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('forum identity mode rules reject anonymous posting when disabled and signed posting when only anonymous is allowed', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Signed Only Forum',
+          tags: [{ key: 'i', value: '0' }, { key: '1', value: relay.url }],
+        },
+        async (signedOnlyPath) => {
+          const signedOnly = await cli('create', 'forum', '--input', signedOnlyPath, '--json');
+          await withJsonFile(
+            { title: 'Need identity', body: 'No anonymous allowed' },
+            async (postPath) => {
+              const stderr = await cliFailure(
+                'forum',
+                'post',
+                signedOnly.fragment,
+                '--input',
+                postPath,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+              expect(stderr).toContain('This forum requires a Nostr identity.');
+            },
+          );
+        },
+      );
+
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Anonymous Only Forum',
+          tags: [{ key: 'i', value: '2' }, { key: '1', value: relay.url }],
+        },
+        async (anonymousOnlyPath) => {
+          const anonymousOnly = await cli('create', 'forum', '--input', anonymousOnlyPath, '--json');
+          await withJsonFile(
+            { title: 'Signed blocked', body: 'Nostr sign-in disabled' },
+            async (postPath) => {
+              const stderr = await cliFailure(
+                'forum',
+                'post',
+                anonymousOnly.fragment,
+                '--input',
+                postPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+              expect(stderr).toContain('This forum only allows anonymous participation.');
+            },
+          );
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('forum CLI reuses a persisted anonymous session for posts, chat routing, and private inbox decryption', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
 

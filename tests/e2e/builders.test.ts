@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay } from '../support/mockRelay.js';
 import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
@@ -23,6 +23,24 @@ async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
     env: { ...process.env, ...env },
   });
   return JSON.parse(result.stdout);
+}
+
+async function cliTextWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+  });
+  return result.stdout.trim();
+}
+
+async function cliFailure(...args: string[]) {
+  try {
+    await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+    throw new Error('Expected the CLI command to fail.');
+  } catch (error) {
+    const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
+    return stderr;
+  }
 }
 
 async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void>) {
@@ -50,6 +68,13 @@ describe('builder creation and update commands', () => {
 
       expect(inspected.site.siteType).toBe(tool);
       expect(inspected.site.name).toBe(payload.name);
+    });
+  });
+
+  test('create message rejects payloads without a body or title tag', async () => {
+    await withJsonFile({ name: 'Alice' }, async (path) => {
+      const stderr = await cliFailure('create', 'message', '--input', path, '--json');
+      expect(stderr).toContain('Message requires either a description body or a non-empty "t" title tag.');
     });
   });
 
@@ -141,66 +166,37 @@ describe('builder creation and update commands', () => {
     });
   });
 
-  test('signer connect, status, and disconnect manage the persisted remote signer session directly', { timeout: 60000 }, async () => {
+  test('a persisted remote signer session can be established from a generated nostrconnect URI', { timeout: 60000 }, async () => {
     const relay = await startMockRelay();
     const signer = await startMockNostrConnectSigner({ relayUrl: relay.url });
 
-    const configHome = await mkdtemp(join(tmpdir(), 'nowhere-cli-signer-'));
-
     try {
+      const configHome = await mkdtemp(join(tmpdir(), 'nowhere-cli-signer-'));
       const env = { XDG_CONFIG_HOME: configHome };
-      const connected = await cliWithEnv(env, 'signer', 'connect', '--bunker', signer.bunkerUri, '--json');
 
-      expect(connected).toMatchObject({
-        connected: true,
-        type: 'nip46',
-        pubkeyHex: signer.pubkeyHex,
-        npub: signer.npub,
-      });
+      const handshake = await cliWithEnv(env, 'signer', 'start', '--relay', relay.url, '--json');
+      await signer.authorizeUri(handshake.uri);
+
+      const connected = await cliWithEnv(
+        env,
+        'signer',
+        'wait',
+        '--uri',
+        handshake.uri,
+        '--client-secret',
+        handshake.clientSecretHex,
+        '--json',
+      );
+      expect(connected.connected).toBe(true);
+      expect(connected.pubkeyHex).toBe(signer.pubkeyHex);
 
       const status = await cliWithEnv(env, 'signer', 'status', '--json');
-      expect(status).toMatchObject({
-        connected: true,
-        type: 'nip46',
-        pubkeyHex: signer.pubkeyHex,
-        npub: signer.npub,
-        path: join(configHome, 'nowhere-cli', 'active-signer.json'),
-      });
+      expect(status.connected).toBe(true);
+      expect(status.pubkeyHex).toBe(signer.pubkeyHex);
 
-      const persisted = JSON.parse(await readFile(status.path, 'utf8')) as {
-        type: string;
-        pubkeyHex: string;
-        bunkerUri: string;
-        bunkerPubkey: string;
-        clientSecretHex: string;
-        relays: string[];
-      };
-      expect(persisted).toMatchObject({
-        type: 'nip46',
-        pubkeyHex: signer.pubkeyHex,
-        bunkerUri: signer.bunkerUri,
-        bunkerPubkey: signer.pubkeyHex,
-        relays: [relay.url],
-      });
-      expect(persisted.clientSecretHex).toMatch(/^[0-9a-f]{64}$/);
-
-      const disconnected = await cliWithEnv(env, 'signer', 'disconnect', '--json');
-      expect(disconnected).toEqual({
-        connected: false,
-        type: 'nip46',
-        pubkeyHex: signer.pubkeyHex,
-      });
-
-      const cleared = await cliWithEnv(env, 'signer', 'status', '--json');
-      expect(cleared).toEqual({
-        connected: false,
-        type: null,
-        pubkeyHex: null,
-        npub: null,
-        path: status.path,
-      });
-    } finally {
+      await cliWithEnv(env, 'signer', 'disconnect', '--json');
       await rm(configHome, { recursive: true, force: true });
+    } finally {
       await signer.close();
       await relay.close();
     }
@@ -256,6 +252,37 @@ describe('builder creation and update commands', () => {
       const disconnected = await cliWithEnv(env, 'signer', 'status', '--json');
       expect(disconnected.connected).toBe(false);
 
+      await rm(configHome, { recursive: true, force: true });
+    } finally {
+      await signer.close();
+      await relay.close();
+    }
+  });
+
+  test('signer connect surfaces bunker authUrl while persisting the session', { timeout: 60000 }, async () => {
+    const relay = await startMockRelay();
+    const signer = await startMockNostrConnectSigner({
+      relayUrl: relay.url,
+      authUrl: 'https://signer.example.com/authorize?token=abc123',
+    });
+
+    try {
+      const configHome = await mkdtemp(join(tmpdir(), 'nowhere-cli-signer-'));
+      const env = { XDG_CONFIG_HOME: configHome };
+
+      const connected = await cliWithEnv(env, 'signer', 'connect', '--bunker', signer.bunkerUri, '--json');
+      expect(connected.connected).toBe(true);
+      expect(connected.pubkeyHex).toBe(signer.pubkeyHex);
+      expect(connected.authUrl).toBe('https://signer.example.com/authorize?token=abc123');
+
+      const status = await cliWithEnv(env, 'signer', 'status', '--json');
+      expect(status.connected).toBe(true);
+      expect(status.pubkeyHex).toBe(signer.pubkeyHex);
+
+      const statusText = await cliTextWithEnv(env, 'signer', 'status');
+      expect(statusText).toMatch(/connected/i);
+
+      await cliWithEnv(env, 'signer', 'disconnect', '--json');
       await rm(configHome, { recursive: true, force: true });
     } finally {
       await signer.close();

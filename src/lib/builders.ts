@@ -145,6 +145,10 @@ function siteTypeForTool(tool: ToolSlug): SiteData['siteType'] {
   return tool === 'forum' ? 'discussion' : tool;
 }
 
+function hasMessageTitleTag(tags: Tag[]): boolean {
+  return tags.some((tag) => tag.key === 't' && Boolean(tag.value?.trim()));
+}
+
 function prepareSiteData(tool: ToolSlug, raw: unknown): EncodableSite {
   const value = objectValue(raw);
   const tags = mergeDefaultTags(tool, normalizeTags(value.tags));
@@ -191,6 +195,9 @@ function prepareSiteData(tool: ToolSlug, raw: unknown): EncodableSite {
         tags,
       };
     case 'message':
+      if (!optionalStringValue(value.description) && !hasMessageTitleTag(tags)) {
+        throw new Error('Message requires either a description body or a non-empty "t" title tag.');
+      }
       return {
         version: 1,
         siteType: 'message',
