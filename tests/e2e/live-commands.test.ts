@@ -17,6 +17,11 @@ async function cli(...args: string[]) {
   return JSON.parse(result.stdout);
 }
 
+async function cliText(...args: string[]) {
+  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+  return result.stdout.trim();
+}
+
 async function cliFailure(...args: string[]) {
   try {
     await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
@@ -306,6 +311,22 @@ describe('relay-backed CLI commands', () => {
               expect(fetchedOrders.orders).toHaveLength(2);
               expect(fetchedOrders.orders.some((entry: { order: { total: number } }) => entry.order.total === 2700)).toBe(true);
 
+              const csv = await cliText(
+                'store',
+                'orders',
+                store.fragment,
+                '--secret',
+                seller.secretHex,
+                '--relay',
+                relay.url,
+                '--csv',
+              );
+
+              expect(csv).toContain('Date,Order ID,Store');
+              expect(csv).toContain(published.order.orderId);
+              expect(csv).toContain('Freedom Market');
+              expect(csv).toContain('Alex');
+
               const fetchedById = await cli(
                 'store',
                 'orders',
@@ -532,6 +553,23 @@ describe('relay-backed CLI commands', () => {
               expect(fetched.signatures).toHaveLength(1);
               expect(fetched.signatures[0]?.payload.name).toBe('Casey');
               expect(fetched.signatures[0]?.payload.comment).toBe('Solidarity.');
+
+              const csv = await cliText(
+                'petition',
+                'signatures',
+                petition.fragment,
+                '--secret',
+                owner.secretHex,
+                '--relay',
+                relay.url,
+                '--pow-difficulty',
+                '8',
+                '--csv',
+              );
+
+              expect(csv).toContain('"Signed At","Name","Email"');
+              expect(csv).toContain('"Casey"');
+              expect(csv).toContain('"Solidarity."');
             },
           );
         },
@@ -556,6 +594,33 @@ describe('relay-backed CLI commands', () => {
           'donate',
           'methods',
           fundraiser.fragment,
+          '--json',
+        );
+
+        expect(methods.methods).toHaveLength(3);
+        expect(methods.methods[0]?.id).toBe('lightning');
+        expect(methods.methods[1]?.id).toBe('custom_0');
+        expect(methods.methods[2]?.showQr).toBe(true);
+      },
+    );
+  });
+
+  test('message commands list tip methods', async () => {
+    await withJsonFile(
+      {
+        name: 'Signal Boost',
+        description: 'Support the courier.',
+        tags: [
+          { key: 'l', value: 'tips@seller.test,*PayPal:paypal.me/message,*!BTC:bc1qmessage' },
+        ],
+      },
+      async (messagePath) => {
+        const message = await cli('create', 'message', '--input', messagePath, '--json');
+        const methods = await cli(
+          'message',
+          'tip',
+          'methods',
+          message.fragment,
           '--json',
         );
 

@@ -12,8 +12,10 @@ import {
   resolveSiteInput,
 } from './lib/fragments.js';
 import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from './lib/fundraiser-donate.js';
+import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
+import { createMessageTipInvoice, listMessageTipMethods } from './lib/message-tips.js';
 import { printOutput } from './lib/output.js';
 import { destroyPool, getPetitionRelays } from './lib/relay.js';
 import {
@@ -64,6 +66,10 @@ import {
 
 function fail(message: string): never {
   throw new Error(message);
+}
+
+function printTextOutput(value: string): void {
+  process.stdout.write(`${value}\n`);
 }
 
 const toolChoices: ToolSlug[] = [
@@ -738,9 +744,14 @@ store
   .option('--since <unix>', 'Only fetch orders at or after this Unix timestamp.')
   .option('--until <unix>', 'Only fetch orders at or before this Unix timestamp.')
   .option('--limit <count>', 'Maximum number of events to inspect.')
+  .option('--csv', 'Emit CSV output.')
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
     const requestedOrderIds = getRelayList(options.orderId);
+    const resolved = await resolveSiteInput(storeInput);
+    if (!resolved.siteData || resolved.siteData.siteType !== 'store') {
+      fail('Expected a Nowhere store URL or fragment.');
+    }
     const fetched = await withStoreRelayClient((relayClient) => (
       requestedOrderIds && requestedOrderIds.length > 0
         ? fetchOrdersByIds({
@@ -759,6 +770,10 @@ store
           }, relayClient)
     ));
 
+    if (options.csv) {
+      printTextOutput(formatStoreOrdersCsv(fetched, resolved.siteData));
+      return;
+    }
     printOutput(fetched, Boolean(options.json));
   });
 
@@ -963,6 +978,7 @@ petition
   .requiredOption('--secret <secret>', 'Petition owner nsec or 64-char hex secret.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
+  .option('--csv', 'Emit CSV output.')
   .option('--json', 'Emit JSON output.')
   .action(async (petitionInput, options) => {
     const resolved = await resolveSiteInput(petitionInput);
@@ -973,20 +989,26 @@ petition
     const fragment = resolved.decodedFragment;
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
 
-    printOutput(
-      await withPetitionTransport((transport) => fetchPetitionSignaturesForOwner({
+    const fetched = await withPetitionTransport((transport) => fetchPetitionSignaturesForOwner({
         fragment,
         ownerSecret: options.secret,
         relays,
         powDifficulty: Number.parseInt(options.powDifficulty, 10),
         transport,
-      })),
-      Boolean(options.json),
-    );
+      }));
+
+    if (options.csv) {
+      printTextOutput(formatPetitionSignaturesCsv(fetched));
+      return;
+    }
+
+    printOutput(fetched, Boolean(options.json));
   });
 
 const fundraiser = program.command('fundraiser').description('Inspect fundraiser donation methods and Lightning invoice flows.');
 const fundraiserDonate = fundraiser.command('donate').description('List methods or generate a fundraiser Lightning invoice.');
+const message = program.command('message').description('Inspect message tip methods and Lightning invoice flows.');
+const messageTip = message.command('tip').description('List methods or generate a message Lightning invoice.');
 
 fundraiserDonate
   .command('methods')
@@ -1013,6 +1035,38 @@ fundraiserDonate
     printOutput(
       await createFundraiserDonationInvoice({
         fundraiserInput,
+        methodId: options.method,
+        sats: Number.parseInt(options.sats, 10),
+      }),
+      Boolean(options.json),
+    );
+  });
+
+messageTip
+  .command('methods')
+  .description('List the message tip methods encoded in tag l.')
+  .argument('<message>', 'Message fragment or full message URL.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (messageInput, options) => {
+    printOutput(
+      {
+        methods: await listMessageTipMethods(messageInput),
+      },
+      Boolean(options.json),
+    );
+  });
+
+messageTip
+  .command('invoice')
+  .description('Generate a Lightning invoice for a message tip.')
+  .argument('<message>', 'Message fragment or full message URL.')
+  .option('--method <id>', 'Tip method id. Defaults to "lightning".', 'lightning')
+  .requiredOption('--sats <count>', 'Tip amount in sats.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (messageInput, options) => {
+    printOutput(
+      await createMessageTipInvoice({
+        messageInput,
         methodId: options.method,
         sats: Number.parseInt(options.sats, 10),
       }),
