@@ -11,6 +11,7 @@ import {
   normalizeToFragment,
   resolveSiteInput,
 } from './lib/fragments.js';
+import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from './lib/fundraiser-donate.js';
 import { readJsonInput } from './lib/io.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
 import { printOutput } from './lib/output.js';
@@ -41,6 +42,7 @@ import {
   publishRoomAnnouncement,
   publishRoomChatMessage,
 } from './lib/forum-live.js';
+import { beginStoreCheckout, quoteStoreCheckout } from './lib/store-checkout.js';
 import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
   createSimplePoolRelayClient,
@@ -394,6 +396,17 @@ async function resolveTorrentSubmission(options: {
   }
 
   fail('Provide either --input or --torrent-file.');
+}
+
+function readOrderItems(value: Record<string, unknown>, key = 'items'): Array<{ i: number; qty: number; v?: string }> {
+  return (readArray(value, key) ?? []).map((entry, index) => {
+    const item = requireObject(entry, `Expected "${key}[${index}]" to be an object.`);
+    return {
+      i: readNumber(item, 'i') as number,
+      qty: readNumber(item, 'qty') as number,
+      v: readString(item, 'v', false),
+    };
+  });
 }
 
 const program = new Command();
@@ -754,6 +767,53 @@ store
     );
   });
 
+const storeCheckout = store.command('checkout').description('Quote or begin the website-style checkout flow.');
+
+storeCheckout
+  .command('quote')
+  .description('Compute checkout totals, field requirements, inventory gating, and payment methods.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--cart <path>', 'Path to the checkout cart JSON, or "-" for stdin.')
+  .option('--buyer-country <code>', 'Optional buyer country used for shipping and country validation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const cart = await readObjectInput(options.cart, 'Expected a JSON checkout cart payload.');
+    printOutput(
+      await withStoreRelayClient((relayClient) => quoteStoreCheckout({
+        storeUrl: storeInput,
+        items: readOrderItems(cart),
+        buyerCountry: options.buyerCountry,
+        relayList: getRelayList(options.relay),
+      }, relayClient)),
+      Boolean(options.json),
+    );
+  });
+
+storeCheckout
+  .command('begin')
+  .description('Start a checkout flow, publish the order, and return the invoice or manual instructions.')
+  .argument('<store>', 'Store fragment or full store URL.')
+  .requiredOption('--cart <path>', 'Path to the checkout cart JSON, or "-" for stdin.')
+  .requiredOption('--buyer <path>', 'Path to the buyer JSON, or "-" for stdin.')
+  .option('--method <id>', 'Payment method id, such as bitcoin, payid, or custom_0.', 'bitcoin')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (storeInput, options) => {
+    const cart = await readObjectInput(options.cart, 'Expected a JSON checkout cart payload.');
+    const buyer = await readObjectInput(options.buyer, 'Expected a JSON buyer payload.');
+    printOutput(
+      await withStoreRelayClient((relayClient) => beginStoreCheckout({
+        storeUrl: storeInput,
+        items: readOrderItems(cart),
+        buyer: Object.fromEntries(Object.entries(buyer).map(([key, value]) => [key, String(value)])),
+        methodId: options.method,
+        relayList: getRelayList(options.relay),
+      }, relayClient)),
+      Boolean(options.json),
+    );
+  });
+
 const storeStatus = store.command('status').description('Publish or inspect encrypted store status.');
 
 storeStatus
@@ -897,6 +957,41 @@ petition
         powDifficulty: Number.parseInt(options.powDifficulty, 10),
         transport,
       })),
+      Boolean(options.json),
+    );
+  });
+
+const fundraiser = program.command('fundraiser').description('Inspect fundraiser donation methods and Lightning invoice flows.');
+const fundraiserDonate = fundraiser.command('donate').description('List methods or generate a fundraiser Lightning invoice.');
+
+fundraiserDonate
+  .command('methods')
+  .description('List the fundraiser donation methods encoded in tag l.')
+  .argument('<fundraiser>', 'Fundraiser fragment or full fundraiser URL.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (fundraiserInput, options) => {
+    printOutput(
+      {
+        methods: await listFundraiserDonationMethods(fundraiserInput),
+      },
+      Boolean(options.json),
+    );
+  });
+
+fundraiserDonate
+  .command('invoice')
+  .description('Generate a Lightning invoice for a fundraiser donation.')
+  .argument('<fundraiser>', 'Fundraiser fragment or full fundraiser URL.')
+  .option('--method <id>', 'Donation method id. Defaults to "lightning".', 'lightning')
+  .requiredOption('--sats <count>', 'Donation amount in sats.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (fundraiserInput, options) => {
+    printOutput(
+      await createFundraiserDonationInvoice({
+        fundraiserInput,
+        methodId: options.method,
+        sats: Number.parseInt(options.sats, 10),
+      }),
       Boolean(options.json),
     );
   });
