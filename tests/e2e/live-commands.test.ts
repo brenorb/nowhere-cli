@@ -4,10 +4,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { encryptFragment } from '@nowhere/codec';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay } from '../support/mockRelay.js';
 import { publishToRelays, destroyPool } from '../../src/lib/relay.js';
+import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.js';
 
 const execFileAsync = promisify(execFile);
 const cwd = '/Users/REDACTED';
@@ -671,17 +673,28 @@ describe('relay-backed CLI commands', () => {
           ],
         },
         async (storePath) => {
-          const store = await cli(
+          const unsignedStore = await cli(
             'create',
             'store',
             '--input',
             storePath,
             '--sign-secret',
             storeOwner.nsec,
-            '--encrypt-password',
-            'store-pass',
             '--json',
           );
+          const signedStoreFragment = unsignedStore.signedFragment ?? unsignedStore.fragment;
+          let storePassword = 'store-pass';
+          let encryptedStoreFragment = '';
+          for (let index = 0; index < 512; index += 1) {
+            const candidatePassword = `store-pass-${index}`;
+            const candidateFragment = await encryptFragment(signedStoreFragment, candidatePassword);
+            if (candidateFragment.startsWith('-')) {
+              storePassword = candidatePassword;
+              encryptedStoreFragment = candidateFragment;
+              break;
+            }
+          }
+          expect(encryptedStoreFragment.startsWith('-')).toBe(true);
 
           await withJsonFile(
             {
@@ -695,9 +708,9 @@ describe('relay-backed CLI commands', () => {
               const published = await cli(
                 'store',
                 'order',
-                store.fragment,
+                encryptedStoreFragment,
                 '--password',
-                'store-pass',
+                storePassword,
                 '--input',
                 orderPath,
                 '--relay',
@@ -712,9 +725,9 @@ describe('relay-backed CLI commands', () => {
           const fetched = await cli(
             'store',
             'orders',
-            store.fragment,
+            encryptedStoreFragment,
             '--password',
-            'store-pass',
+            storePassword,
             '--secret',
             storeOwner.secretHex,
             '--relay',
@@ -736,9 +749,9 @@ describe('relay-backed CLI commands', () => {
                 'store',
                 'status',
                 'publish',
-                store.fragment,
+                encryptedStoreFragment,
                 '--password',
-                'store-pass',
+                storePassword,
                 '--input',
                 statusPath,
                 '--secret',
@@ -754,9 +767,9 @@ describe('relay-backed CLI commands', () => {
             'store',
             'status',
             'fetch',
-            store.fragment,
+            encryptedStoreFragment,
             '--password',
-            'store-pass',
+            storePassword,
             '--relay',
             relay.url,
             '--json',
@@ -773,9 +786,9 @@ describe('relay-backed CLI commands', () => {
                 'store',
                 'checkout',
                 'quote',
-                store.fragment,
+                encryptedStoreFragment,
                 '--password',
-                'store-pass',
+                storePassword,
                 '--cart',
                 cartPath,
                 '--relay',
@@ -1574,6 +1587,233 @@ describe('relay-backed CLI commands', () => {
       );
     } finally {
       destroyPool();
+      await relay.close();
+    }
+  });
+
+  test('store, petition, and forum management commands can use the persisted remote signer session', { timeout: 60000 }, async () => {
+    const relay = await startMockRelay();
+    const signer = await startMockNostrConnectSigner({ relayUrl: relay.url });
+
+    try {
+      await withTempDir('nowhere-cli-signer-', async (configHome) => {
+        const env = { XDG_CONFIG_HOME: configHome };
+        await cliWithEnv(env, 'signer', 'connect', '--bunker', signer.bunkerUri, '--json');
+
+        await withJsonFile(
+          {
+            pubkey: signer.npub,
+            name: 'Signer Store',
+            items: [{ name: 'Zine', price: 12 }],
+            tags: [
+              { key: '1', value: relay.url },
+              { key: '2', value: relay.url },
+              { key: '$', value: 'USD' },
+              { key: 'k', value: null },
+              { key: 's', value: '300' },
+            ],
+          },
+          async (storePath) => {
+            const store = await cliWithEnv(env, 'create', 'store', '--input', storePath, '--use-signer', '--json');
+
+            await withJsonFile(
+              {
+                buyer: { name: 'Alex', email: 'alex@example.com' },
+                items: [{ i: 0, qty: 1 }],
+                subtotal: 12,
+                shipping: 3,
+                total: 15,
+              },
+              async (orderPath) => {
+                const published = await cli(
+                  'store',
+                  'order',
+                  store.fragment,
+                  '--input',
+                  orderPath,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+
+                await withJsonFile(published.receiptPayload, async (receiptPath) => {
+                  const receipt = await cliWithEnv(
+                    env,
+                    'store',
+                    'receipt',
+                    'decrypt',
+                    '--input',
+                    receiptPath,
+                    '--use-signer',
+                    '--json',
+                  );
+                  expect(receipt.order.orderId).toBe(published.order.orderId);
+
+                  const fetchedOrders = await cliWithEnv(
+                    env,
+                    'store',
+                    'orders',
+                    store.fragment,
+                    '--use-signer',
+                    '--relay',
+                    relay.url,
+                    '--json',
+                  );
+                  expect(fetchedOrders.orders).toHaveLength(1);
+
+                  const verified = await cliWithEnv(
+                    env,
+                    'store',
+                    'verify',
+                    store.fragment,
+                    '--input',
+                    receiptPath,
+                    '--use-signer',
+                    '--json',
+                  );
+                  expect(verified.ok).toBe(true);
+                });
+              },
+            );
+
+            await withJsonFile(
+              { notice: 'Inventory rotated' },
+              async (statusPath) => {
+                const publishedStatus = await cliWithEnv(
+                  env,
+                  'store',
+                  'status',
+                  'publish',
+                  store.fragment,
+                  '--input',
+                  statusPath,
+                  '--use-signer',
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(publishedStatus.payload.notice).toBe('Inventory rotated');
+              },
+            );
+          },
+        );
+
+        await withJsonFile(
+          {
+            pubkey: signer.npub,
+            name: 'Signer Petition',
+            tags: [
+              { key: '1', value: relay.url },
+              { key: 'N', value: null },
+            ],
+          },
+          async (petitionPath) => {
+            const petition = await cliWithEnv(env, 'create', 'petition', '--input', petitionPath, '--use-signer', '--json');
+
+            await withJsonFile(
+              { name: 'Signer Supporter' },
+              async (signaturePath) => {
+                const published = await cliWithEnv(
+                  env,
+                  'petition',
+                  'sign',
+                  petition.fragment,
+                  '--input',
+                  signaturePath,
+                  '--use-signer',
+                  '--relay',
+                  relay.url,
+                  '--pow-difficulty',
+                  '8',
+                  '--json',
+                );
+                expect(published.signerPubkeyHex).toBe(signer.pubkeyHex);
+              },
+            );
+
+            const signatures = await cliWithEnv(
+              env,
+              'petition',
+              'signatures',
+              petition.fragment,
+              '--use-signer',
+              '--relay',
+              relay.url,
+              '--pow-difficulty',
+              '8',
+              '--json',
+            );
+            expect(signatures.signatures).toHaveLength(1);
+            expect(signatures.signatures[0]?.payload.name).toBe('Signer Supporter');
+          },
+        );
+
+        await withJsonFile(
+          {
+            pubkey: signer.npub,
+            name: 'Signer Forum',
+            tags: [{ key: '1', value: relay.url }],
+          },
+          async (forumPath) => {
+            const forum = await cliWithEnv(env, 'create', 'forum', '--input', forumPath, '--use-signer', '--json');
+
+            await withJsonFile(
+              { title: 'Remote signer thread', body: 'Signed without exporting the key' },
+              async (postPath) => {
+                const post = await cliWithEnv(
+                  env,
+                  'forum',
+                  'post',
+                  forum.fragment,
+                  '--input',
+                  postPath,
+                  '--use-signer',
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+                expect(post.authorPubkeyHex).toBe(signer.pubkeyHex);
+              },
+            );
+
+            await withJsonFile(
+              { message: 'Signer chat online' },
+              async (chatPath) => {
+                await cliWithEnv(
+                  env,
+                  'forum',
+                  'chat',
+                  'send',
+                  forum.fragment,
+                  '--input',
+                  chatPath,
+                  '--use-signer',
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+              },
+            );
+
+            const messages = await cliWithEnv(
+              env,
+              'forum',
+              'chat',
+              'list',
+              forum.fragment,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+            expect(messages.messages.some((entry: { payload: { p: string; b: string } }) => (
+              entry.payload.p === signer.pubkeyHex && entry.payload.b === 'Signer chat online'
+            ))).toBe(true);
+          },
+        );
+      });
+    } finally {
+      destroyPool();
+      await signer.close();
       await relay.close();
     }
   });

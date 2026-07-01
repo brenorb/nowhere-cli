@@ -5,6 +5,7 @@ import { SimplePool } from 'nostr-tools/pool';
 import type { Event } from 'nostr-tools/core';
 import type { Filter } from 'nostr-tools/filter';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import type { CliSigner } from './active-signer.js';
 import { parseSecretKeyInput } from './keys.js';
 
 export const NOWHERE_DTAG_PREFIX = 'nowhr';
@@ -36,6 +37,7 @@ export interface PublishPetitionSignatureOptions<TPayload extends PetitionSignat
   relays: string[];
   petitionTags?: Tag[];
   secret?: string;
+  signer?: CliSigner;
   transport?: PetitionRelayTransport;
   timestamp?: number;
   powDifficulty?: number;
@@ -65,7 +67,8 @@ export interface CountPetitionSignaturesResult {
 
 export interface FetchPetitionSignaturesOptions {
   fragment: string;
-  ownerSecret: string;
+  ownerSecret?: string;
+  ownerSigner?: CliSigner;
   relays: string[];
   transport?: PetitionRelayTransport;
   powDifficulty?: number;
@@ -269,12 +272,20 @@ export async function publishPetitionSignature<TPayload extends PetitionSignatur
   const transport = options.transport ?? getDefaultTransport();
   const petitionHash = await computePetitionHash(options.fragment);
   const dTag = petitionDTag(petitionHash);
-  const secretKey = options.secret ? parseSecretKeyInput(options.secret) : generateSecretKey();
-  const signerPubkeyHex = getPublicKey(secretKey);
-  const content = nip44.encrypt(
-    JSON.stringify(options.payload),
-    nip44.getConversationKey(secretKey, options.creatorPubkeyHex),
-  );
+  const localSecretKey = options.signer
+    ? undefined
+    : options.secret
+      ? parseSecretKeyInput(options.secret)
+      : generateSecretKey();
+  const signerPubkeyHex = options.signer
+    ? await options.signer.getPublicKey()
+    : getPublicKey(localSecretKey as Uint8Array);
+  const content = options.signer
+    ? await options.signer.nip44Encrypt(options.creatorPubkeyHex, JSON.stringify(options.payload))
+    : nip44.encrypt(
+      JSON.stringify(options.payload),
+      nip44.getConversationKey(localSecretKey as Uint8Array, options.creatorPubkeyHex),
+    );
   const powDifficulty = options.powDifficulty ?? POW_DIFFICULTY;
 
   options.onPhase?.('encrypting');
@@ -289,15 +300,22 @@ export async function publishPetitionSignature<TPayload extends PetitionSignatur
 
   options.onPhase?.('pow');
   const withPow = await applyPoW(unsigned, powDifficulty);
-  const event = finalizeEvent(
-    {
+  const event = options.signer
+    ? await options.signer.signEvent({
       kind: withPow.kind,
       created_at: withPow.created_at,
       content: withPow.content,
       tags: withPow.tags,
-    },
-    secretKey,
-  );
+    })
+    : finalizeEvent(
+      {
+        kind: withPow.kind,
+        created_at: withPow.created_at,
+        content: withPow.content,
+        tags: withPow.tags,
+      },
+      localSecretKey as Uint8Array,
+    );
 
   if (!verifyEvent(event)) {
     throw new Error('Failed to verify signed petition signature event.');
@@ -307,7 +325,7 @@ export async function publishPetitionSignature<TPayload extends PetitionSignatur
   await transport.publish(event, options.relays);
 
   return {
-    anonymous: !options.secret,
+    anonymous: !options.secret && !options.signer,
     petitionHash,
     dTag,
     signerPubkeyHex,
@@ -337,7 +355,10 @@ export async function fetchPetitionSignaturesForOwner<TPayload extends PetitionS
   const transport = options.transport ?? getDefaultTransport();
   const petitionHash = await computePetitionHash(options.fragment);
   const dTag = petitionDTag(petitionHash);
-  const ownerSecretKey = parseSecretKeyInput(options.ownerSecret);
+  if (!options.ownerSecret && !options.ownerSigner) {
+    throw new Error('Pass either an owner secret or an active signer to decrypt petition signatures.');
+  }
+  const ownerSecretKey = options.ownerSecret ? parseSecretKeyInput(options.ownerSecret) : null;
   const powDifficulty = options.powDifficulty ?? POW_DIFFICULTY;
   const rawEvents = await transport.fetch(buildPetitionFilter(dTag), options.relays);
 
@@ -359,9 +380,19 @@ export async function fetchPetitionSignaturesForOwner<TPayload extends PetitionS
 
   const signatures = sortedEvents.map<DecryptedPetitionSignature<TPayload>>((event) => {
     try {
+      if (options.ownerSigner) {
+        return {
+          pubkey: event.pubkey,
+          createdAt: event.created_at,
+          event,
+          payload: null,
+          decryptError: '__async__',
+        };
+      }
+
       const plaintext = nip44.decrypt(
         event.content,
-        nip44.getConversationKey(ownerSecretKey, event.pubkey),
+        nip44.getConversationKey(ownerSecretKey as Uint8Array, event.pubkey),
       );
       return {
         pubkey: event.pubkey,
@@ -380,6 +411,30 @@ export async function fetchPetitionSignaturesForOwner<TPayload extends PetitionS
       };
     }
   });
+
+  if (options.ownerSigner) {
+    for (let index = 0; index < signatures.length; index += 1) {
+      const entry = signatures[index];
+      if (!entry || entry.decryptError !== '__async__') {
+        continue;
+      }
+
+      try {
+        const plaintext = await options.ownerSigner.nip44Decrypt(entry.event.pubkey, entry.event.content);
+        signatures[index] = {
+          ...entry,
+          payload: JSON.parse(plaintext) as TPayload,
+          decryptError: null,
+        };
+      } catch (error) {
+        signatures[index] = {
+          ...entry,
+          payload: null,
+          decryptError: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+  }
 
   return {
     petitionHash,

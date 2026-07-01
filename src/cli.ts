@@ -1,8 +1,17 @@
 import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes, type SiteData } from '@nowhere/codec';
 import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
+import { nip19 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
 import { finalizeEvent } from 'nostr-tools/pure';
+import {
+  connectSignerViaBunker,
+  disconnectActiveSigner,
+  getActiveSignerStatus,
+  requireActiveSigner,
+  signerFromSecret,
+  type CliSigner,
+} from './lib/active-signer.js';
 import { buildSite, deepMerge, type ToolSlug } from './lib/builders.js';
 import { DEFAULT_RENDERER_ORIGIN } from './lib/constants.js';
 import {
@@ -55,6 +64,7 @@ import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
   createSimplePoolRelayClient,
   decryptOrderReceipt,
+  decryptOrderReceiptWithAccess,
   fetchOrdersByIds,
   fetchCurrentStatus,
   fetchOrdersForSeller,
@@ -84,13 +94,18 @@ const toolChoices: ToolSlug[] = [
 ];
 
 async function signFragmentWithSecret(input: string, secret: string) {
+  return signFragmentWithSigner(input, signerFromSecret(secret));
+}
+
+async function signFragmentWithSigner(input: string, signer: CliSigner) {
   const resolved = await resolveSiteInput(input);
   if (!resolved.siteData) {
     fail(resolved.decodeError ?? 'Could not decode fragment before signing.');
   }
 
-  const material = describeSecret(secret);
-  if (resolved.siteData.pubkey && resolved.siteData.pubkey !== material.nowherePubkey) {
+  const signerPubkeyHex = await signer.getPublicKey();
+  const signerNowherePubkey = bytesToBase64url(hexToBytes(signerPubkeyHex));
+  if (resolved.siteData.pubkey && resolved.siteData.pubkey !== signerNowherePubkey) {
     fail('Wrong key: the provided secret does not match the public key embedded in this site.');
   }
 
@@ -99,15 +114,12 @@ async function signFragmentWithSecret(input: string, secret: string) {
     fail('Could not derive an unsigned fragment to sign.');
   }
 
-  const signedEvent = finalizeEvent(
-    {
-      kind: 22242,
-      created_at: 0,
-      tags: [],
-      content: unsignedFragment,
-    },
-    material.secretKey,
-  );
+  const signedEvent = await signer.signEvent({
+    kind: 22242,
+    created_at: 0,
+    tags: [],
+    content: unsignedFragment,
+  });
 
   const signatureBytes = hexToBytes(signedEvent.sig);
   const fragmentBytes = Buffer.from(unsignedFragment.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
@@ -121,15 +133,16 @@ async function signFragmentWithSecret(input: string, secret: string) {
     signedUrl: fragmentToUrl(signedFragment),
     unsignedFragment,
     unsignedUrl: fragmentToUrl(unsignedFragment),
-    signerPubkeyHex: material.pubkeyHex,
-    signerNpub: material.npub,
-    signerNowherePubkey: material.nowherePubkey,
+    signerPubkeyHex,
+    signerNpub: nip19.npubEncode(signerPubkeyHex),
+    signerNowherePubkey,
   };
 }
 
 async function finalizePublish(
   fragment: string,
   signSecret?: string,
+  signer?: CliSigner,
   encryptPassword?: string,
 ): Promise<{
   fragment: string;
@@ -151,8 +164,10 @@ async function finalizePublish(
   let encryptedFragment: string | null = null;
   let encryptedUrl: string | null = null;
 
-  if (signSecret) {
-    const signed = await signFragmentWithSecret(unsignedFragment, signSecret);
+  if (signSecret || signer) {
+    const signed = signSecret
+      ? await signFragmentWithSecret(unsignedFragment, signSecret)
+      : await signFragmentWithSigner(unsignedFragment, signer as CliSigner);
     signedFragment = signed.signedFragment;
     signedUrl = signed.signedUrl;
     activeFragment = signed.signedFragment;
@@ -169,7 +184,7 @@ async function finalizePublish(
     url: fragmentToUrl(activeFragment),
     unsignedFragment,
     unsignedUrl,
-    signed: Boolean(signSecret),
+    signed: Boolean(signSecret || signer),
     encrypted: Boolean(encryptPassword),
     signedFragment,
     signedUrl,
@@ -241,6 +256,138 @@ async function resolveRuntimeSiteInput<TExpected extends 'store' | 'petition' | 
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function getRegisteredArgumentCount(command: Command): number {
+  const candidate = command as Command & { registeredArguments?: unknown[] };
+  return Array.isArray(candidate.registeredArguments) ? candidate.registeredArguments.length : 0;
+}
+
+function collectOptionSpecs(command: Command): Map<string, boolean> {
+  const specs = new Map<string, boolean>();
+  for (let current: Command | null = command; current; current = current.parent ?? null) {
+    for (const option of current.options) {
+      const takesValue = option.flags.includes('<') || option.flags.includes('[');
+      if (option.short) {
+        specs.set(option.short, takesValue);
+      }
+      if (option.long) {
+        specs.set(option.long, takesValue);
+      }
+    }
+  }
+  specs.set('-h', false);
+  specs.set('--help', false);
+  return specs;
+}
+
+function findArgumentTokenIndex(tokens: string[], startIndex: number, optionSpecs: Map<string, boolean>): number {
+  let index = startIndex;
+  while (index < tokens.length) {
+    const token = tokens[index] as string;
+    if (token === '--') {
+      return index + 1 < tokens.length ? index + 1 : -1;
+    }
+    if (!token.startsWith('-') || token === '-') {
+      return index;
+    }
+
+    const flag = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    const takesValue = optionSpecs.get(flag);
+    if (takesValue === undefined) {
+      return index;
+    }
+
+    index += takesValue && !token.includes('=') ? 2 : 1;
+  }
+
+  return -1;
+}
+
+function normalizeLeadingDashPositionalArg(root: Command, argv: string[]): string[] {
+  const tokens = argv.slice(2);
+  let command = root;
+  let index = 0;
+
+  while (index < tokens.length) {
+    const token = tokens[index] as string;
+    if (token.startsWith('-')) {
+      break;
+    }
+    const subcommand = command.commands.find((candidate) => (
+      candidate.name() === token || candidate.aliases().includes(token)
+    ));
+    if (!subcommand) {
+      break;
+    }
+    command = subcommand;
+    index += 1;
+  }
+
+  if (getRegisteredArgumentCount(command) !== 1) {
+    return argv;
+  }
+
+  const optionSpecs = collectOptionSpecs(command);
+  const argumentIndex = findArgumentTokenIndex(tokens, index, optionSpecs);
+  if (argumentIndex < 0) {
+    return argv;
+  }
+
+  const candidate = tokens[argumentIndex] as string;
+  if (!candidate.startsWith('-') || candidate === '-') {
+    return argv;
+  }
+
+  const normalizedFlag = candidate.includes('=') ? candidate.slice(0, candidate.indexOf('=')) : candidate;
+  if (optionSpecs.has(normalizedFlag)) {
+    return argv;
+  }
+
+  const reordered = [
+    ...tokens.slice(0, argumentIndex),
+    ...tokens.slice(argumentIndex + 1),
+    '--',
+    candidate,
+  ];
+  return [argv[0] as string, argv[1] as string, ...reordered];
+}
+
+function failOnSignerConflict(secret: string | undefined, useSigner: boolean | undefined, secretLabel = '--secret'): void {
+  if (secret && useSigner) {
+    fail(`Choose either ${secretLabel} or --use-signer, not both.`);
+  }
+}
+
+async function resolveOptionalSigner(secret: string | undefined, useSigner: boolean | undefined, secretLabel = '--secret'): Promise<CliSigner | undefined> {
+  failOnSignerConflict(secret, useSigner, secretLabel);
+  if (secret) {
+    return signerFromSecret(secret);
+  }
+  if (useSigner) {
+    return requireActiveSigner();
+  }
+  return undefined;
+}
+
+async function resolveRequiredSigner(secret: string | undefined, useSigner: boolean | undefined, secretLabel = '--secret'): Promise<CliSigner> {
+  const signer = await resolveOptionalSigner(secret, useSigner, secretLabel);
+  if (!signer) {
+    fail(`Pass either ${secretLabel} or --use-signer.`);
+  }
+  return signer;
+}
+
+async function closeSignerQuietly(signer: CliSigner | undefined): Promise<void> {
+  if (!signer) {
+    return;
+  }
+  try {
+    await signer.disconnect();
+  } catch {
+    // Swallow signer teardown failures on process exit.
+  }
+  destroyPool();
 }
 
 function getRelayList(relays: string[] | undefined): string[] | undefined {
@@ -547,15 +694,70 @@ program
     );
   });
 
+const signerCommand = program
+  .command('signer')
+  .description('Manage the persisted remote signer session used for existing-key flows.');
+
+signerCommand
+  .command('connect')
+  .description('Connect to a remote NIP-46 signer via bunker URI or name@domain and persist the session.')
+  .requiredOption('--bunker <input>', 'bunker:// URI or name@domain exposed by the signer.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (options) => {
+    const signer = await connectSignerViaBunker(options.bunker);
+    try {
+      printOutput(
+        {
+          connected: true,
+          type: signer.type,
+          pubkeyHex: signer.pubkeyHex,
+          npub: nip19.npubEncode(signer.pubkeyHex),
+        },
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
+  });
+
+signerCommand
+  .command('status')
+  .description('Inspect the currently persisted remote signer session.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (options) => {
+    try {
+      printOutput(await getActiveSignerStatus(), Boolean(options.json));
+    } finally {
+      destroyPool();
+    }
+  });
+
+signerCommand
+  .command('disconnect')
+  .description('Forget the persisted remote signer session.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (options) => {
+    try {
+      printOutput(await disconnectActiveSigner(), Boolean(options.json));
+    } finally {
+      destroyPool();
+    }
+  });
+
 program
   .command('sign')
   .description('Sign an unsigned Nowhere fragment with an existing Nostr key.')
   .argument('<input>', 'Fragment or full Nowhere URL.')
-  .requiredOption('--secret <secret>', '64-char hex key or nsec.')
+  .option('--secret <secret>', '64-char hex key or nsec.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--json', 'Emit JSON output.')
   .action(async (input, options) => {
-    const result = await signFragmentWithSecret(input, options.secret);
-    printOutput(result, Boolean(options.json));
+    const signer = await resolveRequiredSigner(options.secret, options.useSigner);
+    try {
+      printOutput(await signFragmentWithSigner(input, signer), Boolean(options.json));
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 program
@@ -589,6 +791,7 @@ program
   .argument('<tool>', `One of: ${toolChoices.join(', ')}`)
   .requiredOption('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
   .option('--sign-secret <secret>', 'Sign the generated site with this nsec or hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of --sign-secret.')
   .option('--encrypt-password <password>', 'Encrypt the final fragment after signing, matching the web flow.')
   .option('--json', 'Emit JSON output.')
   .action(async (tool: string, options) => {
@@ -598,23 +801,29 @@ program
 
     const raw = await readJsonInput(options.input);
     const built = await buildSite(tool as ToolSlug, raw);
-    const published = await finalizePublish(
-      built.fragment,
-      options.signSecret,
-      options.encryptPassword,
-    );
+    const signer = await resolveOptionalSigner(options.signSecret, options.useSigner, '--sign-secret');
+    try {
+      const published = await finalizePublish(
+        built.fragment,
+        options.signSecret,
+        signer,
+        options.encryptPassword,
+      );
 
-    printOutput(
-      {
-        tool,
-        siteType: tool === 'forum' ? 'discussion' : tool,
-        inputPath: options.input,
-        siteData: built.siteData,
-        verification: built.verification,
-        ...published,
-      },
-      Boolean(options.json),
-    );
+      printOutput(
+        {
+          tool,
+          siteType: tool === 'forum' ? 'discussion' : tool,
+          inputPath: options.input,
+          siteData: built.siteData,
+          verification: built.verification,
+          ...published,
+        },
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 program
@@ -624,6 +833,7 @@ program
   .requiredOption('--patch <path>', 'Path to JSON patch, or "-" to read JSON from stdin.')
   .option('--password <password>', 'Decrypt the existing site before applying the patch.')
   .option('--sign-secret <secret>', 'Sign the updated site with this nsec or hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of --sign-secret.')
   .option('--encrypt-password <password>', 'Encrypt the updated fragment after signing.')
   .option('--json', 'Emit JSON output.')
   .action(async (input, options) => {
@@ -638,23 +848,29 @@ program
       : (resolved.siteData.siteType as ToolSlug);
     const merged = deepMerge(resolved.siteData, patch);
     const built = await buildSite(tool, merged);
-    const published = await finalizePublish(
-      built.fragment,
-      options.signSecret,
-      options.encryptPassword,
-    );
+    const signer = await resolveOptionalSigner(options.signSecret, options.useSigner, '--sign-secret');
+    try {
+      const published = await finalizePublish(
+        built.fragment,
+        options.signSecret,
+        signer,
+        options.encryptPassword,
+      );
 
-    printOutput(
-      {
-        tool,
-        sourceInput: input,
-        patchPath: options.patch,
-        siteData: built.siteData,
-        verification: built.verification,
-        ...published,
-      },
-      Boolean(options.json),
-    );
+      printOutput(
+        {
+          tool,
+          sourceInput: input,
+          patchPath: options.patch,
+          siteData: built.siteData,
+          verification: built.verification,
+          ...published,
+        },
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 program
@@ -740,9 +956,10 @@ const storeReceipt = store.command('receipt').description('Work with seller-visi
 
 storeReceipt
   .command('decrypt')
-  .description('Decrypt a Nowhere store receipt using the seller secret.')
+  .description('Decrypt a Nowhere store receipt using the seller secret or active signer.')
   .requiredOption('--input <path>', 'Path to the receipt JSON, or "-" for stdin.')
-  .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--json', 'Emit JSON output.')
   .action(async (options) => {
     const receipt = await readJsonInput(options.input);
@@ -759,17 +976,25 @@ storeReceipt
             c: record.c,
           };
         })();
-    printOutput(
-      decryptOrderReceipt(normalizedReceipt, options.secret),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        signer
+          ? await decryptOrderReceiptWithAccess(normalizedReceipt, undefined, signer)
+          : decryptOrderReceipt(normalizedReceipt, options.secret),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 store
   .command('orders')
   .description('Fetch and decrypt seller-visible orders for a store.')
   .argument('<store>', 'Store fragment or full store URL.')
-  .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--order-id <id>', 'Only fetch specific order ids. Repeat to pass more than one.', collectOption, [])
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -781,29 +1006,36 @@ store
   .action(async (storeInput, options) => {
     const requestedOrderIds = getRelayList(options.orderId);
     const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
-    const fetched = await withStoreRelayClient((relayClient) => (
-      requestedOrderIds && requestedOrderIds.length > 0
-        ? fetchOrdersByIds({
-            storeUrl: store.url,
-            sellerSecret: options.secret,
-            orderIds: requestedOrderIds,
-            relayList: getRelayList(options.relay),
-          }, relayClient)
-        : fetchOrdersForSeller({
-            storeUrl: store.url,
-            sellerSecret: options.secret,
-            relayList: getRelayList(options.relay),
-            since: options.since ? Number.parseInt(options.since, 10) : undefined,
-            until: options.until ? Number.parseInt(options.until, 10) : undefined,
-            limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
-          }, relayClient)
-    ));
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const fetched = await withStoreRelayClient((relayClient) => (
+        requestedOrderIds && requestedOrderIds.length > 0
+          ? fetchOrdersByIds({
+              storeUrl: store.url,
+              sellerSecret: options.secret,
+              sellerSigner: signer,
+              orderIds: requestedOrderIds,
+              relayList: getRelayList(options.relay),
+            }, relayClient)
+          : fetchOrdersForSeller({
+              storeUrl: store.url,
+              sellerSecret: options.secret,
+              sellerSigner: signer,
+              relayList: getRelayList(options.relay),
+              since: options.since ? Number.parseInt(options.since, 10) : undefined,
+              until: options.until ? Number.parseInt(options.until, 10) : undefined,
+              limit: options.limit ? Number.parseInt(options.limit, 10) : undefined,
+            }, relayClient)
+      ));
 
-    if (options.csv) {
-      printTextOutput(formatStoreOrdersCsv(fetched, store.siteData));
-      return;
+      if (options.csv) {
+        printTextOutput(formatStoreOrdersCsv(fetched, store.siteData));
+        return;
+      }
+      printOutput(fetched, Boolean(options.json));
+    } finally {
+      await closeSignerQuietly(signer);
     }
-    printOutput(fetched, Boolean(options.json));
   });
 
 store
@@ -812,6 +1044,7 @@ store
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--input <path>', 'Path to the receipt, order event, or raw order JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Seller nsec or 64-char hex secret. Required for receipts or encrypted order events.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--received-sats <count>', 'Expected sats received in your wallet for sats-based payments.')
   .option('--store-sats-per-unit <value>', 'Override the historical sats-per-unit used for the store currency.')
@@ -820,21 +1053,27 @@ store
   .action(async (storeInput, options) => {
     const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const payload = await readJsonInput(options.input);
-    printOutput(
-      await verifyStoreOrderPayload({
-        storeUrl: store.url,
-        payload,
-        sellerSecret: options.secret,
-        receivedSats: options.receivedSats ? Number.parseInt(options.receivedSats, 10) : undefined,
-        storeRateOverride: options.storeSatsPerUnit
-          ? { satsPerUnit: Number.parseFloat(options.storeSatsPerUnit), source: 'override' }
-          : undefined,
-        paymentRateOverride: options.paymentSatsPerUnit
-          ? { satsPerUnit: Number.parseFloat(options.paymentSatsPerUnit), source: 'override' }
-          : undefined,
-      }),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await verifyStoreOrderPayload({
+          storeUrl: store.url,
+          payload,
+          sellerSecret: options.secret,
+          sellerSigner: signer,
+          receivedSats: options.receivedSats ? Number.parseInt(options.receivedSats, 10) : undefined,
+          storeRateOverride: options.storeSatsPerUnit
+            ? { satsPerUnit: Number.parseFloat(options.storeSatsPerUnit), source: 'override' }
+            : undefined,
+          paymentRateOverride: options.paymentSatsPerUnit
+            ? { satsPerUnit: Number.parseFloat(options.paymentSatsPerUnit), source: 'override' }
+            : undefined,
+        }),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 const storeCheckout = store.command('checkout').description('Quote or begin the website-style checkout flow.');
@@ -895,35 +1134,42 @@ storeStatus
   .description('Publish a store status payload for inventory-aware stores.')
   .argument('<store>', 'Store fragment or full store URL.')
   .requiredOption('--input <path>', 'Path to the status JSON, or "-" for stdin.')
-  .requiredOption('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--secret <secret>', 'Seller nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the store first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
     const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON status payload.');
-    const published = await withStoreRelayClient((relayClient) => publishStoreStatus({
-      storeUrl: store.url,
-      sellerSecret: options.secret,
-      relayList: getRelayList(options.relay),
-      payload: {
-        v: 1,
-        notice: readString(payload, 'notice', false),
-        closed: readString(payload, 'closed', false),
-        redirect: readString(payload, 'redirect', false),
-        items: readUnknownRecord(payload, 'items', false) as Record<string, 0 | 1 | 2 | 3> | undefined,
-        variants: readUnknownRecord(payload, 'variants', false) as Record<string, Record<string, 0 | 1 | 2 | 3>> | undefined,
-        low: payload.low
-          ? {
-              warn: readBoolean(requireObject(payload.low, 'Expected "low" to be an object.'), 'warn', false),
-              fields: readString(requireObject(payload.low, 'Expected "low" to be an object.'), 'fields', false),
-              refund: readBoolean(requireObject(payload.low, 'Expected "low" to be an object.'), 'refund', false),
-            }
-          : undefined,
-      },
-    }, relayClient));
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const published = await withStoreRelayClient((relayClient) => publishStoreStatus({
+        storeUrl: store.url,
+        sellerSecret: options.secret,
+        sellerSigner: signer,
+        relayList: getRelayList(options.relay),
+        payload: {
+          v: 1,
+          notice: readString(payload, 'notice', false),
+          closed: readString(payload, 'closed', false),
+          redirect: readString(payload, 'redirect', false),
+          items: readUnknownRecord(payload, 'items', false) as Record<string, 0 | 1 | 2 | 3> | undefined,
+          variants: readUnknownRecord(payload, 'variants', false) as Record<string, Record<string, 0 | 1 | 2 | 3>> | undefined,
+          low: payload.low
+            ? {
+                warn: readBoolean(requireObject(payload.low, 'Expected "low" to be an object.'), 'warn', false),
+                fields: readString(requireObject(payload.low, 'Expected "low" to be an object.'), 'fields', false),
+                refund: readBoolean(requireObject(payload.low, 'Expected "low" to be an object.'), 'refund', false),
+              }
+            : undefined,
+        },
+      }, relayClient));
 
-    printOutput(published, Boolean(options.json));
+      printOutput(published, Boolean(options.json));
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 storeStatus
@@ -952,6 +1198,7 @@ petition
   .argument('<petition>', 'Petition fragment or full petition URL.')
   .requiredOption('--input <path>', 'Path to the signature JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the petition first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
@@ -966,20 +1213,26 @@ petition
 
     const payload = await readObjectInput(options.input, 'Expected a JSON petition signature payload.');
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
-    const published = await withPetitionTransport((transport) => publishPetitionSignature({
-      payload,
-      creatorPubkeyHex: bytesToHex(
-        Buffer.from(ownerPubkey.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
-      ),
-      fragment: petition.fragment,
-      relays,
-      petitionTags: siteData.tags,
-      secret: options.secret,
-      powDifficulty: Number.parseInt(options.powDifficulty, 10),
-      transport,
-    }));
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const published = await withPetitionTransport((transport) => publishPetitionSignature({
+        payload,
+        creatorPubkeyHex: bytesToHex(
+          Buffer.from(ownerPubkey.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
+        ),
+        fragment: petition.fragment,
+        relays,
+        petitionTags: siteData.tags,
+        secret: options.secret,
+        signer,
+        powDifficulty: Number.parseInt(options.powDifficulty, 10),
+        transport,
+      }));
 
-    printOutput(published, Boolean(options.json));
+      printOutput(published, Boolean(options.json));
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 petition
@@ -1006,9 +1259,10 @@ petition
 
 petition
   .command('signatures')
-  .description('Fetch and decrypt petition signatures using the owner secret.')
+  .description('Fetch and decrypt petition signatures using the owner secret or active signer.')
   .argument('<petition>', 'Petition fragment or full petition URL.')
-  .requiredOption('--secret <secret>', 'Petition owner nsec or 64-char hex secret.')
+  .option('--secret <secret>', 'Petition owner nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the petition first using this password.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
@@ -1018,21 +1272,26 @@ petition
     const petition = await resolveRuntimeSiteInput(petitionInput, 'petition', options.password);
     const siteData = petition.siteData;
     const relays = getRelayList(options.relay) ?? getPetitionRelays(siteData.tags);
-
-    const fetched = await withPetitionTransport((transport) => fetchPetitionSignaturesForOwner({
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      const fetched = await withPetitionTransport((transport) => fetchPetitionSignaturesForOwner({
         fragment: petition.fragment,
         ownerSecret: options.secret,
+        ownerSigner: signer,
         relays,
         powDifficulty: Number.parseInt(options.powDifficulty, 10),
         transport,
       }));
 
-    if (options.csv) {
-      printTextOutput(formatPetitionSignaturesCsv(fetched));
-      return;
-    }
+      if (options.csv) {
+        printTextOutput(formatPetitionSignaturesCsv(fetched));
+        return;
+      }
 
-    printOutput(fetched, Boolean(options.json));
+      printOutput(fetched, Boolean(options.json));
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 const fundraiser = program.command('fundraiser').description('Inspect fundraiser donation methods and Lightning invoice flows.');
@@ -1143,6 +1402,7 @@ forum
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the post JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1150,19 +1410,25 @@ forum
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON forum post payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishForumPostFromInput({
-        forumInput: forum.url,
-        topic: readString(payload, 'topic', false),
-        title: readString(payload, 'title') as string,
-        body: readString(payload, 'body', false),
-        link: readString(payload, 'link', false),
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishForumPostFromInput({
+          forumInput: forum.url,
+          topic: readString(payload, 'topic', false),
+          title: readString(payload, 'title') as string,
+          body: readString(payload, 'body', false),
+          link: readString(payload, 'link', false),
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forum
@@ -1208,6 +1474,7 @@ forum
   .requiredOption('--post-event <id>', 'Target post event id.')
   .requiredOption('--input <path>', 'Path to the reply JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1215,18 +1482,24 @@ forum
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON forum reply payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishForumReplyFromInput({
-        forumInput: forum.url,
-        postEventId: options.postEvent,
-        body: readString(payload, 'body') as string,
-        quotedReplyId: readString(payload, 'quotedReplyId', false),
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishForumReplyFromInput({
+          forumInput: forum.url,
+          postEventId: options.postEvent,
+          body: readString(payload, 'body') as string,
+          quotedReplyId: readString(payload, 'quotedReplyId', false),
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forum
@@ -1323,6 +1596,7 @@ forumTorrent
   .option('--tracker <url>', 'Override trackers when using --torrent-file. Repeat for more.', collectOption, [])
   .option('--ref <value>', 'Optional DB reference when using --torrent-file. Repeat for more.', collectOption, [])
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1330,16 +1604,22 @@ forumTorrent
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const torrent = await resolveTorrentSubmission(options);
-    printOutput(
-      await withForumPoolCleanup(() => publishForumTorrentFromInput({
-        forumInput: forum.url,
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-        torrent,
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishForumTorrentFromInput({
+          forumInput: forum.url,
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+          torrent,
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forumTorrent
@@ -1349,6 +1629,7 @@ forumTorrent
   .requiredOption('--torrent-event <id>', 'Target torrent event id.')
   .requiredOption('--input <path>', 'Path to the torrent reply JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1356,18 +1637,24 @@ forumTorrent
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON torrent reply payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishForumTorrentReplyFromInput({
-        forumInput: forum.url,
-        torrentEventId: options.torrentEvent,
-        body: readString(payload, 'body') as string,
-        quotedReplyId: readString(payload, 'quotedReplyId', false),
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishForumTorrentReplyFromInput({
+          forumInput: forum.url,
+          torrentEventId: options.torrentEvent,
+          body: readString(payload, 'body') as string,
+          quotedReplyId: readString(payload, 'quotedReplyId', false),
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forumTorrent
@@ -1436,6 +1723,7 @@ forumChat
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--session-secret <secret>', 'Optional stable session secret to advertise for private chat.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
@@ -1444,17 +1732,23 @@ forumChat
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON chat payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishGeneralChatMessage({
-        forumInput: forum.url,
-        message: readString(payload, 'message') as string,
-        secret: options.secret,
-        sessionSecret: options.sessionSecret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishGeneralChatMessage({
+          forumInput: forum.url,
+          message: readString(payload, 'message') as string,
+          secret: options.secret,
+          signer,
+          sessionSecret: options.sessionSecret,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 const forumPrivate = forum.command('private').description('Publish or inspect private forum chat messages.');
@@ -1466,6 +1760,7 @@ forumPrivate
   .requiredOption('--recipient-session-pubkey <pubkey>', 'Recipient stable session pubkey (hex).')
   .requiredOption('--input <path>', 'Path to the private chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1473,17 +1768,23 @@ forumPrivate
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON private chat payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishPrivateChatMessage({
-        forumInput: forum.url,
-        recipientSessionPubkey: options.recipientSessionPubkey,
-        message: readString(payload, 'message') as string,
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishPrivateChatMessage({
+          forumInput: forum.url,
+          recipientSessionPubkey: options.recipientSessionPubkey,
+          message: readString(payload, 'message') as string,
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forumPrivate
@@ -1554,6 +1855,7 @@ forumRoom
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the room announcement JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1561,17 +1863,23 @@ forumRoom
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON room announcement payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishRoomAnnouncement({
-        forumInput: forum.url,
-        roomName: readString(payload, 'roomName') as string,
-        accessCode: readString(payload, 'accessCode') as string,
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishRoomAnnouncement({
+          forumInput: forum.url,
+          roomName: readString(payload, 'roomName') as string,
+          accessCode: readString(payload, 'accessCode') as string,
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forumRoom
@@ -1602,6 +1910,7 @@ forumRoom
   .argument('<forum>', 'Forum fragment or full forum URL.')
   .requiredOption('--input <path>', 'Path to the room chat JSON, or "-" for stdin.')
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
+  .option('--use-signer', 'Use the persisted remote signer instead of a local secret.')
   .option('--password <password>', 'Decrypt the forum first using this password.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
@@ -1609,18 +1918,24 @@ forumRoom
   .action(async (forumInput, options) => {
     const forum = await resolveRuntimeSiteInput(forumInput, 'discussion', options.password);
     const payload = await readObjectInput(options.input, 'Expected a JSON room chat payload.');
-    printOutput(
-      await withForumPoolCleanup(() => publishRoomChatMessage({
-        forumInput: forum.url,
-        roomName: readString(payload, 'roomName') as string,
-        accessCode: readString(payload, 'accessCode') as string,
-        message: readString(payload, 'message') as string,
-        secret: options.secret,
-        salt: options.salt,
-        relays: getRelayList(options.relay),
-      })),
-      Boolean(options.json),
-    );
+    const signer = await resolveOptionalSigner(options.secret, options.useSigner);
+    try {
+      printOutput(
+        await withForumPoolCleanup(() => publishRoomChatMessage({
+          forumInput: forum.url,
+          roomName: readString(payload, 'roomName') as string,
+          accessCode: readString(payload, 'accessCode') as string,
+          message: readString(payload, 'message') as string,
+          secret: options.secret,
+          signer,
+          salt: options.salt,
+          relays: getRelayList(options.relay),
+        })),
+        Boolean(options.json),
+      );
+    } finally {
+      await closeSignerQuietly(signer);
+    }
   });
 
 forumRoom
@@ -1661,7 +1976,7 @@ forumRoom
     );
   });
 
-program.parseAsync(process.argv).catch((error: unknown) => {
+program.parseAsync(normalizeLeadingDashPositionalArg(program, process.argv)).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
