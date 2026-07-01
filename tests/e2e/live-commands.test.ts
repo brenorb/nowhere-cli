@@ -4,8 +4,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { finalizeEvent } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay } from '../support/mockRelay.js';
+import { publishToRelays, destroyPool } from '../../src/lib/relay.js';
 
 const execFileAsync = promisify(execFile);
 const cwd = '/Users/breno/Documents/code/PROJECTS/HRF_GRANT/nowhere-cli';
@@ -72,6 +74,110 @@ function makeTorrentBytes(): Uint8Array {
 }
 
 describe('relay-backed CLI commands', () => {
+  test('forum moderation commands expose WOT access checks and moderated post listings', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const trusted = generateSecretMaterial();
+    const outsider = generateSecretMaterial();
+
+    try {
+      const followEvent = finalizeEvent({
+        kind: 3,
+        created_at: Math.floor(Date.now() / 1000),
+        content: '',
+        tags: [['p', trusted.pubkeyHex]],
+      }, owner.secretKey);
+      await publishToRelays(followEvent, [relay.url]);
+
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Moderated Forum',
+          tags: [
+            { key: '1', value: relay.url },
+            { key: '2', value: relay.url },
+            { key: 'W', value: '1' },
+            { key: 'X', value: 'blocked' },
+          ],
+        },
+        async (forumPath) => {
+          const forum = await cli('create', 'forum', '--input', forumPath, '--json');
+
+          await withJsonFile(
+            { title: 'Trusted post', body: 'clean text' },
+            async (trustedPostPath) => {
+              await cli(
+                'forum',
+                'post',
+                forum.fragment,
+                '--input',
+                trustedPostPath,
+                '--secret',
+                trusted.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          await withJsonFile(
+            { title: 'Outsider blocked', body: 'blocked phrase' },
+            async (outsiderPostPath) => {
+              await cli(
+                'forum',
+                'post',
+                forum.fragment,
+                '--input',
+                outsiderPostPath,
+                '--secret',
+                outsider.secretHex,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const moderated = await cli(
+            'forum',
+            'posts',
+            forum.fragment,
+            '--moderated',
+            '--profile-relay',
+            relay.url,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(moderated.posts).toHaveLength(1);
+          expect(moderated.posts[0]?.payload.t).toBe('Trusted post');
+
+          const access = await cli(
+            'forum',
+            'wot',
+            'check',
+            forum.fragment,
+            '--scope',
+            'post',
+            '--author',
+            outsider.pubkeyHex,
+            '--profile-relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(access.allowed).toBe(false);
+          expect(access.depth).toBe(1);
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
   test('store commands publish orders, decrypt receipts, and manage status', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const seller = generateSecretMaterial();
