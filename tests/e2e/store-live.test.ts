@@ -1,8 +1,9 @@
 import { encode, type StoreData } from '@nowhere/codec';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { Filter } from 'nostr-tools/filter';
 import type { Event } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
+import { beginStoreCheckout, quoteStoreCheckout } from '../../src/lib/store-checkout.js';
 import {
   NOWHERE_APPLICATION_KIND,
   NOWHERE_DTAG_PREFIX,
@@ -18,6 +19,10 @@ import {
   type StatusPayload,
   type StoreRelayClient,
 } from '../../src/lib/store-live.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 class MemoryRelayClient implements StoreRelayClient {
   private readonly eventsByRelay = new Map<string, Event[]>();
@@ -131,6 +136,46 @@ function buildStoreUrl(
   };
 
   return `https://hostednowhere.com/s#${encode(store).fragment}`;
+}
+
+function mockCheckoutFetch() {
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+    const url = String(input);
+
+    if (url.startsWith('https://api.coingecko.com/api/v3/simple/price')) {
+      const currency = new URL(url).searchParams.get('vs_currencies');
+      const pricePerBtc = currency === 'aud' ? 80_000 : 50_000;
+      return new Response(JSON.stringify({ bitcoin: { [currency ?? 'usd']: pricePerBtc } }), { status: 200 });
+    }
+
+    if (url.startsWith('https://api.yadio.io/exrates/') || url.startsWith('https://api.kraken.com/0/public/Ticker')) {
+      return new Response('upstream unavailable', { status: 500 });
+    }
+
+    if (url === 'https://tips@seller.test') {
+      return new Response('not used', { status: 404 });
+    }
+
+    if (url === 'https://seller.test/.well-known/lnurlp/tips') {
+      return new Response(JSON.stringify({
+        callback: 'https://seller.test/lnurl/callback',
+        minSendable: 1_000,
+        maxSendable: 10_000_000_000,
+        metadata: '[]',
+        tag: 'payRequest',
+      }), { status: 200 });
+    }
+
+    if (url.startsWith('https://seller.test/lnurl/callback')) {
+      const amount = new URL(url).searchParams.get('amount');
+      return new Response(JSON.stringify({
+        pr: `lnbc-test-${amount}`,
+        routes: [],
+      }), { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch URL in test: ${url}`);
+  }));
 }
 
 describe('store-live runtime', () => {
@@ -348,5 +393,105 @@ describe('store-live runtime', () => {
     expect(verified.verification.subtotalMatch).toBe(true);
     expect(verified.verification.shippingMatch).toBe(true);
     expect(verified.verification.totalMatch).toBe(true);
+  });
+
+  test('quotes checkout requirements and begins lightning/manual checkout flows', async () => {
+    mockCheckoutFetch();
+
+    const relayClient = new MemoryRelayClient();
+    const seller = generateSecretMaterial();
+    const storeUrl = buildStoreUrl(seller.nowherePubkey, 'Checkout Market', {
+      tags: [
+        { key: '$', value: 'USD' },
+        { key: 'k', value: '1' },
+        { key: '1', value: 'wss://inventory.example' },
+        { key: '2', value: 'wss://orders.example' },
+        { key: 'N', value: undefined },
+        { key: 'A', value: undefined },
+        { key: 'L', value: 'US' },
+        { key: 'R', value: 'CA700' },
+        { key: 'l', value: 'tips@seller.test' },
+        { key: 'j', value: 'seller@payid.test' },
+        { key: '5', value: '*USD:Wire:acct-123' },
+      ],
+      items: [
+        { name: 'Archive Zine', price: 10, tags: [{ key: 'v', value: 'Small.Large' }] },
+      ],
+    });
+
+    await publishStoreStatus({
+      storeUrl,
+      sellerSecret: seller.secretHex,
+      payload: {
+        v: 1,
+        items: { '0': 2 },
+        variants: { '0': { Small: 2, Large: 0 } },
+        low: { warn: true, fields: 'email,notes', refund: true },
+      },
+    }, relayClient);
+
+    const quote = await quoteStoreCheckout({
+      storeUrl,
+      items: [{ i: 0, qty: 1, v: 'Small' }],
+      buyerCountry: 'CA',
+    }, relayClient);
+
+    expect(quote.inventory.gate).toBe('ok');
+    expect(quote.shipping).toBe(7);
+    expect(quote.total).toBe(17);
+    expect(quote.fields.required).toEqual(expect.arrayContaining([
+      'name',
+      'email',
+      'street',
+      'city',
+      'country',
+      'notes',
+      'refundAddress',
+    ]));
+    expect(quote.items[0]?.lowStock).toBe(true);
+    expect(quote.items[0]?.unavailable).toBe(false);
+    expect(quote.methods.map((entry) => entry.method.id)).toEqual(['bitcoin', 'payid', 'custom_0']);
+
+    const lightning = await beginStoreCheckout({
+      storeUrl,
+      items: [{ i: 0, qty: 1, v: 'Small' }],
+      buyer: {
+        name: 'Alex',
+        email: 'alex@example.com',
+        street: '1 Relay Way',
+        city: 'Toronto',
+        country: 'CA',
+        notes: 'Leave at door',
+        refundAddress: 'lnbc-refund',
+      },
+      methodId: 'bitcoin',
+    }, relayClient);
+
+    expect(lightning.flow).toBe('lightning');
+    expect(lightning.invoice).toBe('lnbc-test-34000000');
+    expect(lightning.amountSats).toBe(34_000);
+    expect(lightning.published.order.paymentMethod).toBe('bitcoin');
+
+    const manual = await beginStoreCheckout({
+      storeUrl,
+      items: [{ i: 0, qty: 1, v: 'Small' }],
+      buyer: {
+        name: 'Blake',
+        email: 'blake@example.com',
+        street: '2 Relay Way',
+        city: 'Toronto',
+        country: 'CA',
+        notes: 'Buzz on arrival',
+        refundAddress: 'payid-refund',
+      },
+      methodId: 'payid',
+    }, relayClient);
+
+    expect(manual.flow).toBe('manual');
+    expect(manual.paymentCurrency).toBe('AUD');
+    expect(manual.instructions).toContain('seller@payid.test');
+    expect(manual.instructions).toContain(manual.published.order.orderId);
+    expect(manual.published.order.paymentMethod).toBe('payid');
+    expect(manual.published.order.paymentCurrency).toBe('AUD');
   });
 });

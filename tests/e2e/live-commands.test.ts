@@ -81,13 +81,20 @@ describe('relay-backed CLI commands', () => {
         {
           pubkey: seller.npub,
           name: 'Freedom Market',
-          items: [{ name: 'Zine', price: 12, tags: [{ key: 'f', value: null }] }],
+          items: [{ name: 'Zine', price: 12, tags: [{ key: 'f', value: null }, { key: 'v', value: 'Small.Large' }] }],
           tags: [
             { key: '1', value: relay.url },
             { key: '2', value: relay.url },
             { key: '$', value: 'USD' },
             { key: 'k', value: null },
             { key: 's', value: '300' },
+            { key: 'N', value: null },
+            { key: 'A', value: null },
+            { key: 'L', value: 'US' },
+            { key: 'R', value: 'CA700' },
+            { key: 'l', value: 'tips@seller.test' },
+            { key: 'j', value: 'seller@payid.test' },
+            { key: '5', value: '*USD:Wire:acct-123' },
           ],
         },
         async (storePath) => {
@@ -249,6 +256,70 @@ describe('relay-backed CLI commands', () => {
               expect(fetchedStatus.payload.items['0']).toBe(2);
             },
           );
+
+          await withJsonFile(
+            {
+              items: [{ i: 0, qty: 1, v: 'Small' }],
+            },
+            async (cartPath) => {
+              const quoted = await cli(
+                'store',
+                'checkout',
+                'quote',
+                store.fragment,
+                '--cart',
+                cartPath,
+                '--buyer-country',
+                'CA',
+                '--json',
+              );
+
+              expect(quoted.total).toBe(19);
+              expect(quoted.inventory.gate).toBe('ok');
+              expect(quoted.fields.required).toEqual(expect.arrayContaining([
+                'name',
+                'email',
+                'street',
+                'city',
+                'country',
+              ]));
+              expect(quoted.methods.map((entry: { method: { id: string } }) => entry.method.id)).toEqual([
+                'bitcoin',
+                'payid',
+                'custom_0',
+              ]);
+
+              await withJsonFile(
+                {
+                  name: 'Alex',
+                  email: 'alex@example.com',
+                  street: '1 Relay Way',
+                  city: 'Toronto',
+                  country: 'CA',
+                },
+                async (buyerPath) => {
+                  const started = await cli(
+                    'store',
+                    'checkout',
+                    'begin',
+                    store.fragment,
+                    '--cart',
+                    cartPath,
+                    '--buyer',
+                    buyerPath,
+                    '--method',
+                    'payid',
+                    '--json',
+                  );
+
+                  expect(started.flow).toBe('manual');
+                  expect(started.paymentCurrency).toBe('AUD');
+                  expect(started.instructions).toContain('seller@payid.test');
+                  expect(started.published.order.paymentMethod).toBe('payid');
+                },
+              );
+            },
+          );
         },
       );
     } finally {
@@ -362,6 +433,32 @@ describe('relay-backed CLI commands', () => {
     } finally {
       await relay.close();
     }
+  });
+
+  test('fundraiser commands list donation methods', async () => {
+    await withJsonFile(
+      {
+        name: 'Freedom Fund',
+        tags: [
+          { key: 'l', value: 'tips@seller.test,*PayPal:paypal.me/freedom,*!BTC:bc1qfundraiser' },
+        ],
+      },
+      async (fundraiserPath) => {
+        const fundraiser = await cli('create', 'fundraiser', '--input', fundraiserPath, '--json');
+        const methods = await cli(
+          'fundraiser',
+          'donate',
+          'methods',
+          fundraiser.fragment,
+          '--json',
+        );
+
+        expect(methods.methods).toHaveLength(3);
+        expect(methods.methods[0]?.id).toBe('lightning');
+        expect(methods.methods[1]?.id).toBe('custom_0');
+        expect(methods.methods[2]?.showQr).toBe(true);
+      },
+    );
   });
 
   test('forum commands publish posts, replies, torrents, room flows, and chat', { timeout: 30000 }, async () => {
