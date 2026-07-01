@@ -1,4 +1,5 @@
 import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes } from '@nowhere/codec';
+import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { SimplePool } from 'nostr-tools/pool';
 import { finalizeEvent } from 'nostr-tools/pure';
@@ -21,6 +22,8 @@ import {
   publishPetitionSignature,
 } from './lib/petition-live.js';
 import {
+  buildTorrentDataFromParsedTorrent,
+  checkForumTorrentSubmission,
   listForumPosts,
   listPrivateChatMessages,
   listForumReplies,
@@ -38,6 +41,7 @@ import {
   publishRoomAnnouncement,
   publishRoomChatMessage,
 } from './lib/forum-live.js';
+import { parseTorrentFile } from './lib/torrent-bencode.js';
 import {
   createSimplePoolRelayClient,
   decryptOrderReceipt,
@@ -310,6 +314,86 @@ function readUnknownRecord(value: Record<string, unknown>, key: string, required
   }
 
   return requireObject(candidate, `Expected "${key}" to be an object.`);
+}
+
+function readStringList(values: unknown[] | undefined, key: string): string[] {
+  return (values ?? []).map((entry, index) => {
+    if (typeof entry !== 'string') {
+      fail(`Expected "${key}[${index}]" to be a string.`);
+    }
+    return entry;
+  });
+}
+
+function readTorrentPayload(payload: Record<string, unknown>) {
+  return {
+    x: readString(payload, 'x') as string,
+    title: readString(payload, 'title') as string,
+    description: readString(payload, 'description', false),
+    files: (readArray(payload, 'files') ?? []).map((entry, index) => {
+      const file = requireObject(entry, `Expected "files[${index}]" to be an object.`);
+      return {
+        path: readString(file, 'path') as string,
+        size: readNumber(file, 'size') as number,
+      };
+    }),
+    trackers: readStringList(readArray(payload, 'trackers', false), 'trackers'),
+    category: readString(payload, 'category') as string,
+    refs: readStringList(readArray(payload, 'refs', false), 'refs'),
+  };
+}
+
+async function buildTorrentFromFileOptions(options: {
+  torrentFile: string;
+  category: string;
+  title?: string;
+  description?: string;
+  tracker?: string[];
+  ref?: string[];
+}) {
+  const parsed = parseTorrentFile(await readFile(options.torrentFile));
+  return buildTorrentDataFromParsedTorrent(parsed, {
+    category: options.category,
+    title: options.title,
+    description: options.description,
+    trackers: getRelayList(options.tracker),
+    refs: getRelayList(options.ref),
+  });
+}
+
+async function resolveTorrentSubmission(options: {
+  input?: string;
+  torrentFile?: string;
+  category?: string;
+  title?: string;
+  description?: string;
+  tracker?: string[];
+  ref?: string[];
+}) {
+  if (options.input && options.torrentFile) {
+    fail('Use either --input or --torrent-file, not both.');
+  }
+
+  if (options.input) {
+    const payload = await readObjectInput(options.input, 'Expected a JSON torrent payload.');
+    return readTorrentPayload(payload);
+  }
+
+  if (options.torrentFile) {
+    if (!options.category) {
+      fail('--category is required when using --torrent-file.');
+    }
+    return buildTorrentFromFileOptions({
+      torrentFile: options.torrentFile,
+      category: options.category,
+      title: options.title,
+      description: options.description,
+      tracker: options.tracker,
+      ref: options.ref,
+    });
+  }
+
+  fail('Provide either --input or --torrent-file.');
 }
 
 const program = new Command();
@@ -918,47 +1002,71 @@ forum
 const forumTorrent = forum.command('torrent').description('Publish or inspect forum torrent entries.');
 
 forumTorrent
+  .command('parse')
+  .description('Parse a .torrent file into the torrent payload fields that Nowhere stores.')
+  .argument('<file>', 'Path to the .torrent file.')
+  .option('--json', 'Emit JSON output.')
+  .action(async (file, options) => {
+    printOutput(parseTorrentFile(await readFile(file)), Boolean(options.json));
+  });
+
+forumTorrent
+  .command('check')
+  .description('Validate a torrent submission against forum settings and detect duplicates before publish.')
+  .argument('<forum>', 'Forum fragment or full forum URL.')
+  .requiredOption('--torrent-file <path>', 'Path to the .torrent file.')
+  .requiredOption('--category <path>', 'Torrent category path, such as "docs > manuals".')
+  .option('--title <title>', 'Override the parsed torrent title.')
+  .option('--description <text>', 'Optional torrent description.')
+  .option('--tracker <url>', 'Override trackers. Repeat to pass more than one tracker.', collectOption, [])
+  .option('--ref <value>', 'Optional DB reference. Repeat to pass more than one reference.', collectOption, [])
+  .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
+  .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
+  .option('--json', 'Emit JSON output.')
+  .action(async (forumInput, options) => {
+    const torrent = await buildTorrentFromFileOptions({
+      torrentFile: options.torrentFile,
+      category: options.category,
+      title: options.title,
+      description: options.description,
+      tracker: options.tracker,
+      ref: options.ref,
+    });
+    printOutput(
+      await withForumPoolCleanup(() => checkForumTorrentSubmission({
+        forumInput,
+        torrent,
+        salt: options.salt,
+        relays: getRelayList(options.relay),
+      })),
+      Boolean(options.json),
+    );
+  });
+
+forumTorrent
   .command('publish')
   .description('Publish a forum torrent payload.')
   .argument('<forum>', 'Forum fragment or full forum URL.')
-  .requiredOption('--input <path>', 'Path to the torrent JSON, or "-" for stdin.')
+  .option('--input <path>', 'Path to the torrent JSON, or "-" for stdin.')
+  .option('--torrent-file <path>', 'Path to the .torrent file.')
+  .option('--category <path>', 'Torrent category path when using --torrent-file.')
+  .option('--title <title>', 'Override the parsed torrent title when using --torrent-file.')
+  .option('--description <text>', 'Optional torrent description when using --torrent-file.')
+  .option('--tracker <url>', 'Override trackers when using --torrent-file. Repeat for more.', collectOption, [])
+  .option('--ref <value>', 'Optional DB reference when using --torrent-file. Repeat for more.', collectOption, [])
   .option('--secret <secret>', 'Optional signer nsec or 64-char hex secret.')
   .option('--salt <salt>', 'Optional salt appended to the forum fragment before key derivation.')
   .option('--relay <url>', 'Relay override. Repeat to pass more than one relay.', collectOption, [])
   .option('--json', 'Emit JSON output.')
   .action(async (forumInput, options) => {
-    const payload = await readObjectInput(options.input, 'Expected a JSON torrent payload.');
+    const torrent = await resolveTorrentSubmission(options);
     printOutput(
       await withForumPoolCleanup(() => publishForumTorrentFromInput({
         forumInput,
         secret: options.secret,
         salt: options.salt,
         relays: getRelayList(options.relay),
-        torrent: {
-          x: readString(payload, 'x') as string,
-          title: readString(payload, 'title') as string,
-          description: readString(payload, 'description', false),
-          files: (readArray(payload, 'files') ?? []).map((entry, index) => {
-            const file = requireObject(entry, `Expected "files[${index}]" to be an object.`);
-            return {
-              path: readString(file, 'path') as string,
-              size: readNumber(file, 'size') as number,
-            };
-          }),
-          trackers: (readArray(payload, 'trackers') ?? []).map((entry, index) => {
-            if (typeof entry !== 'string') {
-              fail(`Expected "trackers[${index}]" to be a string.`);
-            }
-            return entry;
-          }),
-          category: readString(payload, 'category') as string,
-          refs: (readArray(payload, 'refs') ?? []).map((entry, index) => {
-            if (typeof entry !== 'string') {
-              fail(`Expected "refs[${index}]" to be a string.`);
-            }
-            return entry;
-          }),
-        },
+        torrent,
       })),
       Boolean(options.json),
     );

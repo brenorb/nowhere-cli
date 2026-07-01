@@ -12,6 +12,7 @@ import type { Event } from 'nostr-tools/core';
 import { describeSecret, parseSecretKeyInput, type SecretMaterial } from './keys.js';
 import { fetchEvent, fetchEvents, getForumRelays, publishToRelays } from './relay.js';
 import { normalizeToFragment } from './fragments.js';
+import type { ParsedTorrentFile } from './torrent-bencode.js';
 
 const encoder = new TextEncoder();
 const NOWHERE_SIGNING_KEY = sha256(encoder.encode('nowhere-forum-signing-v1'));
@@ -116,6 +117,25 @@ export interface DecryptedForumTorrent {
   torrentData: TorrentData;
   wrappedContent: string;
   magnetLink: string;
+}
+
+export interface ForumTorrentSettings {
+  enabled: boolean;
+  topCategories: string[];
+  categoriesFixed: boolean;
+  rules: string;
+}
+
+export interface ForumTorrentDuplicate {
+  reason: 'infohash' | 'title';
+  eventId: string;
+  title: string;
+}
+
+export interface CheckedForumTorrentSubmission {
+  settings: ForumTorrentSettings;
+  torrent: TorrentData;
+  duplicate: ForumTorrentDuplicate | null;
 }
 
 function deriveForumKeypair(fragment: string) {
@@ -229,6 +249,40 @@ function buildTopicEntries(context: ForumContext): Array<{ name: string; tag: st
   }));
 }
 
+function getTagValue(tags: ForumData['tags'], key: string): string | undefined {
+  return tags.find((tag) => tag.key === key)?.value;
+}
+
+function hasBooleanTag(tags: ForumData['tags'], key: string): boolean {
+  return tags.some((tag) => tag.key === key && tag.value === undefined);
+}
+
+function normalizeCategory(category: string): string {
+  return category
+    .split('>')
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean)
+    .join(' > ');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function getTorrentSettings(data: ForumData): ForumTorrentSettings {
+  const topCategories = (getTagValue(data.tags, 'q') ?? 'Software|Video|Audio|Books')
+    .split('|')
+    .map((category) => category.trim().toLowerCase())
+    .filter(Boolean);
+
+  return {
+    enabled: hasBooleanTag(data.tags, 'b'),
+    topCategories,
+    categoriesFixed: hasBooleanTag(data.tags, 'F'),
+    rules: getTagValue(data.tags, 'h') ?? '',
+  };
+}
+
 function resolveAuthor(secret?: string): SecretMaterial | { pubkeyHex: string; secretKey: Uint8Array } {
   if (secret) {
     return describeSecret(secret);
@@ -261,6 +315,10 @@ function createContext(input: string, relayOverride?: string[], salt?: string): 
 
 export function getForumContext(input: string, relayOverride?: string[], salt?: string): ForumContext {
   return createContext(input, relayOverride, salt);
+}
+
+export function getForumTorrentSettings(input: string, salt?: string): ForumTorrentSettings {
+  return getTorrentSettings(createContext(input, undefined, salt).data);
 }
 
 export function getTopicTagMap(input: string, salt?: string): Array<{ topic: string; topicTag: string }> {
@@ -498,10 +556,20 @@ export async function publishForumTorrentFromInput(options: {
   salt?: string;
 }) {
   const context = createContext(options.forumInput, options.relays, options.salt);
+  const checked = await checkForumTorrentSubmission({
+    forumInput: options.forumInput,
+    torrent: options.torrent,
+    relays: context.relays,
+    salt: options.salt,
+  });
+  if (checked.duplicate) {
+    throw new Error(`Torrent already exists (${checked.duplicate.reason} match: ${checked.duplicate.title}).`);
+  }
+
   const author = resolveAuthor(options.secret);
   const topicTag = deriveTopicTag(context.forumPrivkey, TORRENT_TOPIC_SEED);
   const timestamp = Math.floor(Date.now() / 1000);
-  const wrappedContent = wrapContentForSigning(JSON.stringify(options.torrent));
+  const wrappedContent = wrapContentForSigning(JSON.stringify(checked.torrent));
   const inner = finalizeEvent(
     { kind: INNER_EVENT_KIND, created_at: timestamp, content: wrappedContent, tags: [] },
     author.secretKey,
@@ -569,6 +637,81 @@ export async function listForumTorrents(options: {
       }
     })
     .filter((entry): entry is DecryptedForumTorrent => entry !== null);
+}
+
+export function buildTorrentDataFromParsedTorrent(parsed: ParsedTorrentFile, options: {
+  title?: string;
+  description?: string;
+  trackers?: string[];
+  refs?: string[];
+  category: string;
+}): TorrentData {
+  const title = options.title?.trim() || parsed.title.trim();
+  if (!title) {
+    throw new Error('Torrent title is required.');
+  }
+
+  return {
+    x: parsed.infohash,
+    title,
+    ...(options.description?.trim() ? { description: options.description.trim() } : {}),
+    files: parsed.files,
+    trackers: uniqueStrings(options.trackers && options.trackers.length > 0 ? options.trackers : parsed.trackers),
+    category: normalizeCategory(options.category),
+    refs: uniqueStrings(options.refs ?? []),
+  };
+}
+
+export async function checkForumTorrentSubmission(options: {
+  forumInput: string;
+  torrent: TorrentData;
+  relays?: string[];
+  salt?: string;
+}): Promise<CheckedForumTorrentSubmission> {
+  const context = createContext(options.forumInput, options.relays, options.salt);
+  const settings = getTorrentSettings(context.data);
+  if (!settings.enabled) {
+    throw new Error('Torrent submissions are disabled for this forum.');
+  }
+
+  const category = normalizeCategory(options.torrent.category);
+  if (!category) {
+    throw new Error('Torrent category is required.');
+  }
+  const [rootCategory] = category.split(' > ');
+  if (settings.categoriesFixed && rootCategory && !settings.topCategories.includes(rootCategory)) {
+    throw new Error(`Torrent root category must be one of: ${settings.topCategories.join(', ')}.`);
+  }
+
+  const torrent: TorrentData = {
+    ...options.torrent,
+    title: options.torrent.title.trim(),
+    description: options.torrent.description?.trim() || undefined,
+    trackers: uniqueStrings(options.torrent.trackers),
+    refs: uniqueStrings(options.torrent.refs),
+    category,
+  };
+  if (!torrent.title) {
+    throw new Error('Torrent title is required.');
+  }
+
+  const existing = await listForumTorrents({
+    forumInput: options.forumInput,
+    relays: context.relays,
+    salt: options.salt,
+  });
+  const duplicateByHash = existing.find((entry) => entry.torrentData.x === torrent.x);
+  const duplicateByTitle = existing.find((entry) => entry.torrentData.title.trim().toLowerCase() === torrent.title.toLowerCase());
+
+  return {
+    settings,
+    torrent,
+    duplicate: duplicateByHash
+      ? { reason: 'infohash', eventId: duplicateByHash.eventId, title: duplicateByHash.torrentData.title }
+      : duplicateByTitle
+        ? { reason: 'title', eventId: duplicateByTitle.eventId, title: duplicateByTitle.torrentData.title }
+        : null,
+  };
 }
 
 export async function publishForumTorrentReplyFromInput(options: {
