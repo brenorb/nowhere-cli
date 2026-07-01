@@ -36,6 +36,41 @@ async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void
   }
 }
 
+async function withBinaryFile(name: string, bytes: Uint8Array, fn: (path: string) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-live-'));
+  const file = join(dir, name);
+  await writeFile(file, bytes);
+  try {
+    await fn(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function makeTorrentBytes(): Uint8Array {
+  const torrent = [
+    'd',
+    '8:announce',
+    '28:udp://tracker.example.com:80',
+    '13:announce-list',
+    'll28:udp://tracker.example.com:80e',
+    'l27:https://tracker.example.comee',
+    '4:info',
+    'd',
+    '6:length',
+    'i1024e',
+    '4:name',
+    '7:Archive',
+    '12:piece length',
+    'i16384e',
+    '6:pieces',
+    '20:12345678901234567890',
+    'e',
+    'e',
+  ].join('');
+  return new TextEncoder().encode(torrent);
+}
+
 describe('relay-backed CLI commands', () => {
   test('store commands publish orders, decrypt receipts, and manage status', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
@@ -344,8 +379,12 @@ describe('relay-backed CLI commands', () => {
             { key: 'i', value: '1' },
             { key: 'H', value: '0' },
             { key: 'V', value: null },
+            { key: 'b', value: null },
             { key: '1', value: relay.url },
             { key: 'O', value: 'Ops\\pLogistics' },
+            { key: 'q', value: 'Docs|Audio' },
+            { key: 'F', value: null },
+            { key: 'h', value: 'No malware. No dox.' },
           ],
         },
         async (forumPath) => {
@@ -460,85 +499,136 @@ describe('relay-backed CLI commands', () => {
             },
           );
 
-          await withJsonFile(
-            {
-              x: '0123456789abcdef0123456789abcdef01234567',
-              title: 'Archive',
-              description: 'Encrypted media',
-              files: [{ path: 'archive.zip', size: 1024 }],
-              trackers: ['udp://tracker.example.com:80'],
-              category: 'docs',
-              refs: ['ref:1'],
-            },
-            async (torrentPath) => {
-              const torrent = await cli(
-                'forum',
-                'torrent',
-                'publish',
-                forum.fragment,
-                '--input',
-                torrentPath,
-                '--secret',
-                owner.nsec,
-                '--relay',
-                relay.url,
-                '--json',
-              );
+          await withBinaryFile('archive.torrent', makeTorrentBytes(), async (torrentFilePath) => {
+            const parsed = await cli(
+              'forum',
+              'torrent',
+              'parse',
+              torrentFilePath,
+              '--json',
+            );
 
-              expect(torrent.postTag).toHaveLength(32);
+            expect(parsed.infohash).toMatch(/^[0-9a-f]{40}$/);
+            expect(parsed.title).toBe('Archive');
+            expect(parsed.trackers).toEqual([
+              'udp://tracker.example.com:80',
+              'https://tracker.example.com',
+            ]);
 
-              const torrents = await cli(
-                'forum',
-                'torrents',
-                forum.fragment,
-                '--relay',
-                relay.url,
-                '--json',
-              );
+            const checkedBeforePublish = await cli(
+              'forum',
+              'torrent',
+              'check',
+              forum.fragment,
+              '--torrent-file',
+              torrentFilePath,
+              '--category',
+              'Docs > Manuals',
+              '--description',
+              'Encrypted media',
+              '--ref',
+              'ref:1',
+              '--ref',
+              'ref:1',
+              '--relay',
+              relay.url,
+              '--json',
+            );
 
-              expect(torrents.torrents).toHaveLength(1);
-              expect(torrents.torrents[0]?.torrentData.title).toBe('Archive');
-              expect(torrents.torrents[0]?.magnetLink).toContain('magnet:?xt=urn:btih:');
+            expect(checkedBeforePublish.duplicate).toBeNull();
+            expect(checkedBeforePublish.torrent.category).toBe('docs > manuals');
+            expect(checkedBeforePublish.settings.rules).toContain('No malware');
 
-              await withJsonFile(
-                { body: 'Seeding confirmed' },
-                async (torrentReplyPath) => {
-                  const reply = await cli(
-                    'forum',
-                    'torrent',
-                    'reply',
-                    forum.fragment,
-                    '--torrent-event',
-                    torrent.event.id,
-                    '--input',
-                    torrentReplyPath,
-                    '--secret',
-                    owner.nsec,
-                    '--relay',
-                    relay.url,
-                    '--json',
-                  );
+            const torrent = await cli(
+              'forum',
+              'torrent',
+              'publish',
+              forum.fragment,
+              '--torrent-file',
+              torrentFilePath,
+              '--category',
+              'Docs > Manuals',
+              '--description',
+              'Encrypted media',
+              '--ref',
+              'ref:1',
+              '--secret',
+              owner.nsec,
+              '--relay',
+              relay.url,
+              '--json',
+            );
 
-                  expect(reply.postTag).toBe(torrent.postTag);
+            expect(torrent.postTag).toHaveLength(32);
 
-                  const replies = await cli(
-                    'forum',
-                    'torrent',
-                    'replies',
-                    forum.fragment,
-                    '--torrent-event',
-                    torrent.event.id,
-                    '--relay',
-                    relay.url,
-                    '--json',
-                  );
+            const checkedAfterPublish = await cli(
+              'forum',
+              'torrent',
+              'check',
+              forum.fragment,
+              '--torrent-file',
+              torrentFilePath,
+              '--category',
+              'Docs > Manuals',
+              '--relay',
+              relay.url,
+              '--json',
+            );
 
-                  expect(replies.replies).toHaveLength(1);
-                  expect(replies.replies[0]?.payload.b).toBe('Seeding confirmed');
-                },
-              );
-            },
-          );
+            expect(checkedAfterPublish.duplicate?.reason).toBe('infohash');
+
+            const torrents = await cli(
+              'forum',
+              'torrents',
+              forum.fragment,
+              '--relay',
+              relay.url,
+              '--json',
+            );
+
+            expect(torrents.torrents).toHaveLength(1);
+            expect(torrents.torrents[0]?.torrentData.title).toBe('Archive');
+            expect(torrents.torrents[0]?.torrentData.category).toBe('docs > manuals');
+            expect(torrents.torrents[0]?.magnetLink).toContain('magnet:?xt=urn:btih:');
+
+            await withJsonFile(
+              { body: 'Seeding confirmed' },
+              async (torrentReplyPath) => {
+                const reply = await cli(
+                  'forum',
+                  'torrent',
+                  'reply',
+                  forum.fragment,
+                  '--torrent-event',
+                  torrent.event.id,
+                  '--input',
+                  torrentReplyPath,
+                  '--secret',
+                  owner.nsec,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+
+                expect(reply.postTag).toBe(torrent.postTag);
+
+                const replies = await cli(
+                  'forum',
+                  'torrent',
+                  'replies',
+                  forum.fragment,
+                  '--torrent-event',
+                  torrent.event.id,
+                  '--relay',
+                  relay.url,
+                  '--json',
+                );
+
+                expect(replies.replies).toHaveLength(1);
+                expect(replies.replies[0]?.payload.b).toBe('Seeding confirmed');
+              },
+            );
+          });
 
           await withJsonFile(
             {

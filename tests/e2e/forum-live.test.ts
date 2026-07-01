@@ -3,7 +3,10 @@ import { encodeForum, type ForumData } from '@nowhere/codec';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay, type MockRelayHandle } from '../support/mockRelay.js';
 import {
+  buildTorrentDataFromParsedTorrent,
   buildMagnetLink,
+  checkForumTorrentSubmission,
+  getForumTorrentSettings,
   getTopicTagMap,
   listForumPosts,
   listForumReplies,
@@ -23,6 +26,7 @@ import {
   publishRoomChatMessage,
   TORRENT_TOPIC_SEED,
 } from '../../src/lib/forum-live.js';
+import { parseTorrentFile } from '../../src/lib/torrent-bencode.js';
 
 let relay: MockRelayHandle | null = null;
 
@@ -44,10 +48,38 @@ function makeForum(pubkey: string): string {
       { key: 'i', value: '1' },
       { key: 'H', value: '0' },
       { key: 'V', value: undefined },
+      { key: 'b', value: undefined },
       { key: 'O', value: 'Ops\\pLogistics' },
+      { key: 'q', value: 'Docs|Audio' },
+      { key: 'F', value: undefined },
+      { key: 'h', value: 'No malware. No dox.' },
     ],
   };
   return encodeForum(data).fragment;
+}
+
+function makeTorrentBytes(): Uint8Array {
+  const torrent = [
+    'd',
+    '8:announce',
+    '28:udp://tracker.example.com:80',
+    '13:announce-list',
+    'll28:udp://tracker.example.com:80e',
+    'l27:https://tracker.example.comee',
+    '4:info',
+    'd',
+    '6:length',
+    'i1024e',
+    '4:name',
+    '7:Archive',
+    '12:piece length',
+    'i16384e',
+    '6:pieces',
+    '20:12345678901234567890',
+    'e',
+    'e',
+  ].join('');
+  return new TextEncoder().encode(torrent);
 }
 
 describe('forum runtime module', () => {
@@ -134,26 +166,53 @@ describe('forum runtime module', () => {
     const owner = generateSecretMaterial();
     const forumFragment = makeForum(owner.nowherePubkey);
 
+    const parsed = parseTorrentFile(makeTorrentBytes());
+    const prepared = buildTorrentDataFromParsedTorrent(parsed, {
+      category: 'Docs > Manuals',
+      description: 'Encrypted media',
+      refs: ['ref:1', 'ref:1'],
+    });
+
+    const settings = getForumTorrentSettings(forumFragment);
+    expect(settings.enabled).toBe(true);
+    expect(settings.categoriesFixed).toBe(true);
+    expect(settings.topCategories).toEqual(['docs', 'audio']);
+    expect(settings.rules).toContain('No malware');
+
+    const checkedBeforePublish = await checkForumTorrentSubmission({
+      forumInput: forumFragment,
+      relays: [relay.url],
+      torrent: prepared,
+    });
+    expect(checkedBeforePublish.duplicate).toBeNull();
+    expect(checkedBeforePublish.torrent.category).toBe('docs > manuals');
+    expect(checkedBeforePublish.torrent.trackers).toEqual([
+      'udp://tracker.example.com:80',
+      'https://tracker.example.com',
+    ]);
+    expect(checkedBeforePublish.torrent.refs).toEqual(['ref:1']);
+
     const torrent = await publishForumTorrentFromInput({
       forumInput: forumFragment,
       secret: owner.secretHex,
       relays: [relay.url],
-      torrent: {
-        x: '0123456789abcdef0123456789abcdef01234567',
-        title: 'Archive',
-        description: 'Encrypted media',
-        files: [{ path: 'archive.zip', size: 1024 }],
-        trackers: ['udp://tracker.example.com:80'],
-        category: 'docs',
-        refs: ['ref:1'],
-      },
+      torrent: prepared,
     });
 
     const torrents = await listForumTorrents({ forumInput: forumFragment, relays: [relay.url] });
     expect(torrents).toHaveLength(1);
     expect(torrents[0]?.torrentData.title).toBe('Archive');
+    expect(torrents[0]?.torrentData.category).toBe('docs > manuals');
     expect(torrents[0]?.magnetLink).toBe(buildMagnetLink(torrents[0]!.torrentData));
     expect(getTopicTagMap(forumFragment).some((entry) => entry.topic === TORRENT_TOPIC_SEED)).toBe(false);
+
+    const checkedAfterPublish = await checkForumTorrentSubmission({
+      forumInput: forumFragment,
+      relays: [relay.url],
+      torrent: prepared,
+    });
+    expect(checkedAfterPublish.duplicate?.reason).toBe('infohash');
+    expect(checkedAfterPublish.duplicate?.title).toBe('Archive');
 
     await publishForumTorrentReplyFromInput({
       forumInput: forumFragment,
