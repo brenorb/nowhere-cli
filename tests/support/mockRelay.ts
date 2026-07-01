@@ -68,6 +68,8 @@ export async function startMockRelay(): Promise<MockRelayHandle> {
   const wss = new WebSocketServer({ server });
 
   wss.on('connection', (socket: WebSocket) => {
+    const subscriptions = new Map<string, Record<string, unknown>[]>();
+
     socket.on('message', (raw: Buffer) => {
       const message = JSON.parse(raw.toString()) as RelayMessage;
       const [type, ...rest] = message;
@@ -76,11 +78,26 @@ export async function startMockRelay(): Promise<MockRelayHandle> {
         const [event] = rest as [RelayEvent];
         events.push(event);
         socket.send(JSON.stringify(['OK', event.id, true, '']));
+        for (const client of wss.clients) {
+          const clientState = (client as WebSocket & {
+            subscriptions?: Map<string, Record<string, unknown>[]>;
+          }).subscriptions;
+          if (!clientState) {
+            continue;
+          }
+
+          for (const [subId, filters] of clientState.entries()) {
+            if (filters.some((filter) => matchesFilter(event, filter))) {
+              client.send(JSON.stringify(['EVENT', subId, event]));
+            }
+          }
+        }
         return;
       }
 
       if (type === 'REQ') {
         const [subId, ...filters] = rest as [string, ...Record<string, unknown>[]];
+        subscriptions.set(subId, filters);
         const matching = events.filter((event) => filters.some((filter) => matchesFilter(event, filter)));
         for (const event of matching) {
           socket.send(JSON.stringify(['EVENT', subId, event]));
@@ -97,9 +114,13 @@ export async function startMockRelay(): Promise<MockRelayHandle> {
       }
 
       if (type === 'CLOSE') {
+        const [subId] = rest as [string];
+        subscriptions.delete(subId);
         return;
       }
     });
+
+    (socket as WebSocket & { subscriptions?: Map<string, Record<string, unknown>[]> }).subscriptions = subscriptions;
   });
 
   await new Promise<void>((resolve) => {

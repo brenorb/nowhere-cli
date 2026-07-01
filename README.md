@@ -8,6 +8,7 @@ Current scope in this first slice:
 - inspect Nowhere fragments and URLs
 - sign fragments with an existing Nostr key
 - encrypt and decrypt fragments with a password
+- persist a remote NIP-46 signer session and reuse it across create, sign, update, and owner-management flows
 - create all eight Nowhere site types from structured JSON
 - import, patch, and republish existing sites
 - relay-backed runtime modules for store orders/status, petition signatures, and forum activity
@@ -33,6 +34,8 @@ pnpm cli keygen --json
 pnpm cli pubkey --secret nsec1...
 pnpm cli inspect 'https://hostednowhere.com/s#...'
 pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
+pnpm cli signer connect --bunker 'bunker://...' --json
+pnpm cli create store --input ./store.json --use-signer --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
@@ -92,6 +95,10 @@ The CLI now exposes the main relay-backed workflows directly:
 Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it. Forum commands also accept `--salt <value>` anywhere the website derives an alternate salted forum keyspace.
 
 Any runtime command that opens a store, petition, fundraiser, message, or forum now also accepts `--password <password>` so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site.
+
+`signer connect`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
+
+Encrypted fragments are accepted as normal positional arguments even when the base64url payload begins with `-`, so agents do not need to prepend `--` manually when opening encrypted store, petition, fundraiser, message, or forum links.
 
 `store order` accepts the same human-facing totals the website computes in major units and converts them to the wire-format cent fields before publishing. `store orders` also accepts repeated `--order-id <id>` values for targeted lookups, and `store verify` can validate a receipt, encrypted order event, or plaintext order JSON against the store's shipping, discount, and historical-rate rules.
 
