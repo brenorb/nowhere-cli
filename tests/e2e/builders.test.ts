@@ -84,7 +84,7 @@ describe('builder creation and update commands', () => {
         'open sesame',
         '--json',
       );
-      const decrypted = await cli('decrypt', created.fragment, '--password', 'open sesame', '--json');
+      const decrypted = await cli('decrypt', created.url, '--password', 'open sesame', '--json');
       const verified = await cli('verify', decrypted.fragment, '--json');
 
       expect(created.encrypted).toBe(true);

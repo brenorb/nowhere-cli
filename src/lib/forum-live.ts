@@ -295,13 +295,41 @@ function resolveAuthor(secret?: string): SecretMaterial | { pubkeyHex: string; s
   };
 }
 
-function createContext(input: string, relayOverride?: string[], salt?: string): ForumContext {
+function resolveForumFragment(input: string): { fragment: string; data: ForumData } {
   const { fragment } = normalizeToFragment(input);
-  const decoded = decode(fragment);
-  if (decoded.siteType !== 'discussion') {
-    throw new Error('Expected a forum URL or fragment.');
+  try {
+    const decoded = decode(fragment);
+    if (decoded.siteType !== 'discussion') {
+      throw new Error('Expected a forum URL or fragment.');
+    }
+    return {
+      fragment,
+      data: decoded as ForumData,
+    };
+  } catch {
+    const rawBytes = Buffer.from(fragment.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    if (rawBytes.length <= 64) {
+      throw new Error('Expected a forum URL or fragment.');
+    }
+
+    const unsignedFragment = Buffer.from(rawBytes.subarray(0, rawBytes.length - 64))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    const decoded = decode(unsignedFragment);
+    if (decoded.siteType !== 'discussion') {
+      throw new Error('Expected a forum URL or fragment.');
+    }
+    return {
+      fragment: unsignedFragment,
+      data: decoded as ForumData,
+    };
   }
-  const forumData = decoded as ForumData;
+}
+
+function createContext(input: string, relayOverride?: string[], salt?: string): ForumContext {
+  const { fragment, data: forumData } = resolveForumFragment(input);
   const effectiveFragment = salt ? `${fragment}:${salt}` : fragment;
   const { privkey, pubkey } = deriveForumKeypair(effectiveFragment);
   return {
