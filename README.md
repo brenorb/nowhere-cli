@@ -64,6 +64,12 @@ pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --jso
 - Use tag objects like `{ "key": "V", "value": null }` for boolean tags that the web app stores without a value.
 - `update` imports an existing site, merges the patch object, then re-encodes it through the upstream codec.
 
+### Understanding tags
+
+Nowhere tags are the compact internal config format behind the website UI. The CLI exposes them directly because it accepts the upstream codec shape, while the website usually collects the same information through normal form fields and writes the tags for you.
+
+For the full per-tool tag mapping, CLI-injected defaults, and the explanation of which tags change rendering versus runtime behavior, see [docs/tags.md](docs/tags.md).
+
 ## Relay Runtimes
 
 The CLI now includes upstream-compatible runtime modules for the parts of Nowhere that use Nostr relays after site creation:
