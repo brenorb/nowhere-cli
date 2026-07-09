@@ -39,6 +39,8 @@ pnpm cli signer connect --bunker 'bunker://...' --json
 pnpm cli signer start --relay wss://bucket.coracle.social --json
 pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
 pnpm cli create store --input ./store.json --use-signer --json
+pnpm cli create drop --interactive --json
+pnpm cli create --interactive --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
@@ -62,6 +64,12 @@ pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --jso
 ## Builder Input
 
 `create <tool>` accepts the upstream codec shape directly as JSON.
+
+`create --interactive` also supports a guided prompt flow:
+
+- `create <tool> --interactive` asks only for the missing fields for that tool
+- `create --interactive` prompts for the tool first, then the missing fields
+- long-form flags like `--name`, `--description`, `--pubkey`, `--item`, `--svg`, and message `--title` prefill the interactive session instead of being asked again
 
 - Use `pubkey` as a Nowhere base64url pubkey, an `npub`, or a 64-char hex pubkey.
 - Use tag objects like `{ "key": "V", "value": null }` for boolean tags that the web app stores without a value.
