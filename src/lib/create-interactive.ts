@@ -1,26 +1,22 @@
 import { createInterface } from 'node:readline/promises';
 import { stderr as output, stdin as input } from 'node:process';
 import type { CliSigner } from './active-signer.js';
-import type { ToolSlug } from './builders.js';
 import {
   buildCreatePayloadFromOptions,
   parseStoreItemSpec,
   parseTagSpec,
-  toolRequiresOwnerPubkey,
+  upsertMessageTitleTag,
   validateCreateCommandOptions,
   type CreateCommandOptions,
 } from './create-long-form.js';
-
-const toolChoices: ToolSlug[] = [
-  'store',
-  'event',
-  'fundraiser',
-  'petition',
-  'message',
-  'drop',
-  'art',
-  'forum',
-];
+import {
+  getCreateToolDefinition,
+  payloadHasMessageTitle,
+  toolChoices,
+  validateCreatePayloadRequirements,
+  type CreatePromptStep,
+  type ToolSlug,
+} from './create-tools.js';
 
 type CreatePayload = Record<string, unknown>;
 type CreateTag = { key: string; value?: string };
@@ -59,14 +55,8 @@ function readItems(payload: CreatePayload): CreateItem[] {
   return Array.isArray(payload.items) ? payload.items as CreateItem[] : [];
 }
 
-function hasMessageTitle(payload: CreatePayload): boolean {
-  return readTags(payload).some((tag) => tag.key === 't' && Boolean(tag.value?.trim()));
-}
-
 function setMessageTitle(payload: CreatePayload, title: string): void {
-  const tags = readTags(payload).filter((tag) => tag.key !== 't');
-  tags.unshift({ key: 't', value: title });
-  setTags(payload, tags);
+  upsertMessageTitleTag(payload, title);
 }
 
 async function promptLine(
@@ -198,9 +188,7 @@ async function promptStoreItems(session: PromptSession, payload: CreatePayload):
 }
 
 async function promptMessageFields(session: PromptSession, payload: CreatePayload): Promise<void> {
-  await promptMissingText(session, payload, 'name', 'message name', false);
-
-  if (!readString(payload, 'description') && !hasMessageTitle(payload)) {
+  if (!readString(payload, 'description') && !payloadHasMessageTitle(payload)) {
     const body = await promptLine(session, 'Required: message body (leave blank to use a title instead)', { allowBlank: true });
     if (body) {
       payload.description = body;
@@ -208,104 +196,33 @@ async function promptMessageFields(session: PromptSession, payload: CreatePayloa
       const title = await promptLine(session, 'Required: message title', { required: true });
       setMessageTitle(payload, title);
     }
-  } else if (!hasMessageTitle(payload)) {
+  } else if (!payloadHasMessageTitle(payload)) {
     const title = await promptLine(session, 'Optional: message title (leave blank to skip)', { allowBlank: true });
     if (title) {
       setMessageTitle(payload, title);
     }
   }
+}
 
-  await promptMissingText(session, payload, 'image', 'image URL', false);
-  await promptMissingText(session, payload, 'pubkey', 'author pubkey', false);
+async function promptStep(session: PromptSession, payload: CreatePayload, step: CreatePromptStep): Promise<void> {
+  if (step.kind === 'text') {
+    await promptMissingText(session, payload, step.key, step.label, step.required);
+    return;
+  }
+  if (step.kind === 'message-content') {
+    await promptMessageFields(session, payload);
+    return;
+  }
+  if (step.kind === 'items') {
+    await promptStoreItems(session, payload);
+    return;
+  }
   await promptMissingTags(session, payload);
 }
 
-async function promptCommonSiteFields(
-  session: PromptSession,
-  payload: CreatePayload,
-  options: {
-    nameRequired?: boolean;
-    descriptionRequired?: boolean;
-    descriptionLabel?: string;
-    image?: boolean;
-    pubkeyRequired?: boolean;
-    pubkeyOptional?: boolean;
-    svgRequired?: boolean;
-  },
-): Promise<void> {
-  if (options.nameRequired) {
-    await promptMissingText(session, payload, 'name', 'site name', true);
-  }
-  if (options.descriptionRequired) {
-    await promptMissingText(session, payload, 'description', options.descriptionLabel ?? 'description', true);
-  } else if (options.descriptionLabel) {
-    await promptMissingText(session, payload, 'description', options.descriptionLabel, false);
-  }
-  if (options.image) {
-    await promptMissingText(session, payload, 'image', 'image URL', false);
-  }
-  if (options.pubkeyRequired) {
-    await promptMissingText(session, payload, 'pubkey', 'owner pubkey', true);
-  } else if (options.pubkeyOptional) {
-    await promptMissingText(session, payload, 'pubkey', 'pubkey', false);
-  }
-  if (options.svgRequired) {
-    await promptMissingText(session, payload, 'svg', 'SVG markup', true);
-  }
-}
-
 async function promptToolFields(session: PromptSession, tool: ToolSlug, payload: CreatePayload): Promise<void> {
-  switch (tool) {
-    case 'store':
-      await promptCommonSiteFields(session, payload, {
-        nameRequired: true,
-        descriptionLabel: 'description',
-        image: true,
-        pubkeyRequired: toolRequiresOwnerPubkey(tool),
-      });
-      await promptStoreItems(session, payload);
-      await promptMissingTags(session, payload);
-      return;
-    case 'event':
-    case 'fundraiser':
-      await promptCommonSiteFields(session, payload, {
-        nameRequired: true,
-        descriptionLabel: 'description',
-        image: true,
-        pubkeyOptional: true,
-      });
-      await promptMissingTags(session, payload);
-      return;
-    case 'petition':
-    case 'forum':
-      await promptCommonSiteFields(session, payload, {
-        nameRequired: true,
-        descriptionLabel: 'description',
-        image: true,
-        pubkeyRequired: true,
-      });
-      await promptMissingTags(session, payload);
-      return;
-    case 'message':
-      await promptMessageFields(session, payload);
-      return;
-    case 'drop':
-      await promptCommonSiteFields(session, payload, {
-        nameRequired: true,
-        descriptionRequired: true,
-        descriptionLabel: 'description',
-        pubkeyOptional: true,
-      });
-      await promptMissingTags(session, payload);
-      return;
-    case 'art':
-      await promptCommonSiteFields(session, payload, {
-        nameRequired: true,
-        pubkeyOptional: true,
-        svgRequired: true,
-      });
-      await promptMissingTags(session, payload);
-      return;
+  for (const step of getCreateToolDefinition(tool).promptSteps) {
+    await promptStep(session, payload, step);
   }
 }
 
@@ -356,6 +273,7 @@ export async function resolveInteractiveCreateInput(
 
     const payload = await buildCreatePayloadFromOptions(tool, options, signer);
     await promptToolFields(session, tool, payload);
+    validateCreatePayloadRequirements(tool, payload);
     printSummary(tool, payload);
 
     if (!await promptYesNo(session, 'Create site now?', true)) {
