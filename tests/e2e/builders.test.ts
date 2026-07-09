@@ -10,14 +10,15 @@ import { startMockNostrConnectSigner } from '../support/mockNostrConnectSigner.j
 
 const execFileAsync = promisify(execFile);
 const cwd = '/Users/REDACTED';
+const cliArgs = ['--import', 'tsx', 'src/cli.ts'];
 
 async function cli(...args: string[]) {
-  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+  const result = await execFileAsync('node', [...cliArgs, ...args], { cwd });
   return JSON.parse(result.stdout);
 }
 
 async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
-  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+  const result = await execFileAsync('node', [...cliArgs, ...args], {
     cwd,
     env: { ...process.env, ...env },
   });
@@ -25,7 +26,7 @@ async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
 }
 
 async function cliTextWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
-  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+  const result = await execFileAsync('node', [...cliArgs, ...args], {
     cwd,
     env: { ...process.env, ...env },
   });
@@ -34,7 +35,7 @@ async function cliTextWithEnv(env: NodeJS.ProcessEnv, ...args: string[]) {
 
 async function cliFailure(...args: string[]) {
   try {
-    await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+    await execFileAsync('node', [...cliArgs, ...args], { cwd });
     throw new Error('Expected the CLI command to fail.');
   } catch (error) {
     const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
