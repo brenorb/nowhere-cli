@@ -20,6 +20,23 @@ Current scope in this first slice:
 
 Commands currently optimized for agent use expose `--json` output.
 
+## Install
+
+Requires Node.js 20 or newer.
+
+```bash
+npm install --global nowhere-cli
+nowhere --version
+```
+
+The npm package is named `nowhere-cli`; the installed executable is named `nowhere`. For a one-off run without a global install, use:
+
+```bash
+npx nowhere-cli --help
+```
+
+The unscoped npm package named `nowhere` is an unrelated project and is not maintained by this repository.
+
 ## Development
 
 ```bash
@@ -27,6 +44,8 @@ pnpm install
 pnpm test
 pnpm build
 ```
+
+Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package identity, tarball verification, versioning, tags, and GitHub Releases.
 
 ## Examples
 
