@@ -15,6 +15,12 @@ export interface CreatePromptChoice {
   value: string;
 }
 
+export interface CreateFieldStateDefinition {
+  label: string;
+  optionalKey: string;
+  requiredKey: string;
+}
+
 export type CreateTagTextFormat =
   | 'plain'
   | 'cents'
@@ -65,6 +71,34 @@ export type CreatePromptStep =
       defaultValue: boolean;
       valueWhenPresent: boolean;
       whenTagPresent?: string;
+    }
+  | {
+      kind: 'tag-list';
+      tagKey: string;
+      label: string;
+      itemLabel: string;
+      maxItems?: number;
+    }
+  | {
+      kind: 'tag-pairs';
+      tagKey: string;
+      label: string;
+      firstLabel: string;
+      secondLabel: string;
+      format: 'lineup' | 'semicolon';
+    }
+  | {
+      kind: 'field-states';
+      fields: readonly CreateFieldStateDefinition[];
+    }
+  | {
+      kind: 'contacts';
+    }
+  | {
+      kind: 'tips';
+    }
+  | {
+      kind: 'store-payments';
     };
 
 export interface CreateToolDefinition {
@@ -194,6 +228,18 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'tag-text', tagKey: 'Q', label: 'FAQ' },
       { kind: 'tag-boolean', tagKey: 'G', label: 'suggest Nostr as a contact option', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'I', label: 'contact email' },
+      { kind: 'contacts' },
+      { kind: 'store-payments' },
+      {
+        kind: 'field-states',
+        fields: [
+          { label: 'collect buyer email', optionalKey: 'e', requiredKey: 'E' },
+          { label: 'collect buyer name', optionalKey: 'n', requiredKey: 'N' },
+          { label: 'collect buyer address', optionalKey: 'a', requiredKey: 'A' },
+          { label: 'collect buyer phone', optionalKey: 'p', requiredKey: 'P' },
+          { label: 'collect buyer Nostr npub', optionalKey: 'z', requiredKey: 'Z' },
+        ],
+      },
       { kind: 'tag-text', tagKey: 'L', label: 'store country code' },
       { kind: 'tag-text', tagKey: 's', label: 'domestic flat rate', format: 'cents' },
       { kind: 'tag-text', tagKey: 'S', label: 'international flat rate', format: 'cents' },
@@ -231,12 +277,22 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'tag-text', tagKey: '$', label: 'admission price', format: 'cents' },
       { kind: 'tag-choice', tagKey: 'K', label: 'admission currency', choices: eventCurrencies, defaultValue: '' },
       { kind: 'tag-text', tagKey: 'r', label: 'RSVP or ticket link' },
+      {
+        kind: 'tag-pairs',
+        tagKey: 'P',
+        label: 'lineup or speakers',
+        firstLabel: 'name',
+        secondLabel: 'role or subtitle',
+        format: 'lineup',
+      },
       { kind: 'tag-text', tagKey: 'A', label: 'schedule or agenda' },
       { kind: 'tag-text', tagKey: 'q', label: 'capacity', format: 'integer' },
       { kind: 'tag-text', tagKey: 'R', label: 'age restriction' },
       { kind: 'tag-text', tagKey: 'v', label: 'dress code' },
+      { kind: 'tag-list', tagKey: '2', label: 'additional images', itemLabel: 'image URL', maxItems: 4 },
       { kind: 'tag-boolean', tagKey: 'G', label: 'suggest Nostr as a contact option', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'I', label: 'contact email' },
+      { kind: 'contacts' },
       { kind: 'tags' },
     ],
   },
@@ -258,8 +314,10 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'tag-text', tagKey: 't', label: 'tagline' },
       { kind: 'tag-text', tagKey: 'b', label: 'what the money is for' },
       { kind: 'tag-text', tagKey: 'Q', label: 'FAQ' },
+      { kind: 'tips' },
       { kind: 'tag-boolean', tagKey: 'G', label: 'suggest Nostr as a contact option', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'I', label: 'contact email' },
+      { kind: 'contacts' },
       { kind: 'tags' },
     ],
   },
@@ -279,10 +337,31 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'tag-text', tagKey: 'h', label: 'deadline (YYYY-MM-DD)' },
       { kind: 'tag-text', tagKey: 't', label: 'tagline' },
       { kind: 'tag-text', tagKey: 'b', label: 'additional context' },
+      {
+        kind: 'tag-pairs',
+        tagKey: 'D',
+        label: 'decision makers',
+        firstLabel: 'name',
+        secondLabel: 'title',
+        format: 'semicolon',
+      },
       { kind: 'tag-boolean', tagKey: 'R', label: 'allow signer comments', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'c', label: 'allowed signer country codes', format: 'dot-list' },
+      {
+        kind: 'field-states',
+        fields: [
+          { label: 'signer email', optionalKey: 'e', requiredKey: 'E' },
+          { label: 'signer name', optionalKey: 'n', requiredKey: 'N' },
+          { label: 'signer address', optionalKey: 'a', requiredKey: 'A' },
+          { label: 'signer full address', optionalKey: 'b', requiredKey: 'B' },
+          { label: 'signer phone', optionalKey: 'p', requiredKey: 'P' },
+          { label: 'signer Nostr npub', optionalKey: 'z', requiredKey: 'Z' },
+          { label: 'signer organisation', optionalKey: 'u', requiredKey: 'U' },
+        ],
+      },
       { kind: 'tag-boolean', tagKey: 'G', label: 'suggest Nostr as a contact option', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'I', label: 'contact email' },
+      { kind: 'contacts' },
       { kind: 'tags' },
     ],
   },
@@ -297,8 +376,10 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'message-content' },
       { kind: 'text', key: 'image', label: 'image URL', required: false },
       { kind: 'text', key: 'pubkey', label: 'author pubkey', required: false },
+      { kind: 'tips' },
       { kind: 'tag-boolean', tagKey: 'G', label: 'suggest Nostr as a contact option', defaultValue: false, valueWhenPresent: true },
       { kind: 'tag-text', tagKey: 'I', label: 'contact email' },
+      { kind: 'contacts' },
       { kind: 'tags' },
     ],
   },
