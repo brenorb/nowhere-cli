@@ -20,11 +20,11 @@ describe('npm release manifest', () => {
     const manifest = await readManifest();
 
     expect(manifest.private).toBe(false);
-    expect(manifest.bin).toEqual({ nowhere: './dist/cli.js' });
+    expect(manifest.bin).toEqual({ nowhere: 'dist/cli.js' });
     expect(manifest.files).toContain('dist');
     expect(manifest.license).toBe('AGPL-3.0-only');
     expect(manifest.publishConfig?.access).toBe('public');
-    expect(manifest.repository?.url).toBe('https://github.com/project-maintainer/nowhere-cli.git');
+    expect(manifest.repository?.url).toBe('git+https://github.com/project-maintainer/nowhere-cli.git');
     expect(Object.values(manifest.dependencies ?? {})).not.toContainEqual(expect.stringMatching(/^file:/));
   });
 });

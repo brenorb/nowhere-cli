@@ -11,14 +11,14 @@
     "LICENSE"
   ],
   "bin": {
-    "nowhere": "./dist/cli.js"
+    "nowhere": "dist/cli.js"
   },
   "engines": {
     "node": ">=20"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/project-maintainer/nowhere-cli.git"
+    "url": "git+https://github.com/project-maintainer/nowhere-cli.git"
   },
   "homepage": "https://github.com/project-maintainer/nowhere-cli#readme",
   "bugs": {
