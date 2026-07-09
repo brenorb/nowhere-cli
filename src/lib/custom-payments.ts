@@ -5,6 +5,10 @@ export interface CustomPaymentMethod {
   showQr: boolean;
 }
 
+function escapeField(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/,/g, '\\c').replace(/:/g, '\\o');
+}
+
 function unescapeField(value: string): string {
   return value.replace(/\\o/g, ':').replace(/\\c/g, ',').replace(/\\\\/g, '\\');
 }
@@ -78,4 +82,12 @@ export function parseCustomPayments(raw: string): CustomPaymentMethod[] {
       };
     })
     .filter((value): value is CustomPaymentMethod => value !== null);
+}
+
+export function serializeCustomPayments(methods: CustomPaymentMethod[]): string {
+  return methods
+    .map((method) => (
+      `*${method.showQr ? '!' : ''}${escapeField(method.currency)}:${escapeField(method.label)}:${escapeField(method.address)}`
+    ))
+    .join(',');
 }
