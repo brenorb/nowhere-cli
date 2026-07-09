@@ -18,6 +18,7 @@ function structuredStepKinds(tool: ToolSlug): string[] {
   const structuredKinds = new Set([
     'contacts',
     'field-states',
+    'free-shipping',
     'store-payments',
     'tag-list',
     'tag-pairs',
@@ -43,7 +44,7 @@ describe('hosted builder create schema', () => {
   });
 
   test.each([
-    ['store', ['contacts', 'store-payments', 'field-states']],
+    ['store', ['contacts', 'store-payments', 'field-states', 'free-shipping']],
     ['event', ['tag-pairs', 'tag-list', 'contacts']],
     ['fundraiser', ['tips', 'contacts']],
     ['petition', ['tag-pairs', 'field-states', 'contacts']],

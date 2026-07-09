@@ -99,6 +99,9 @@ export type CreatePromptStep =
     }
   | {
       kind: 'store-payments';
+    }
+  | {
+      kind: 'free-shipping';
     };
 
 export interface CreateToolDefinition {
@@ -240,6 +243,7 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
           { label: 'collect buyer Nostr npub', optionalKey: 'z', requiredKey: 'Z' },
         ],
       },
+      { kind: 'free-shipping' },
       { kind: 'tag-text', tagKey: 'L', label: 'store country code' },
       { kind: 'tag-text', tagKey: 's', label: 'domestic flat rate', format: 'cents' },
       { kind: 'tag-text', tagKey: 'S', label: 'international flat rate', format: 'cents' },

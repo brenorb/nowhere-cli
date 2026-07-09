@@ -59,6 +59,10 @@ function hasTag(payload: CreatePayload, key: string): boolean {
   return readTags(payload).some((tag) => tag.key === key);
 }
 
+function hasBooleanTag(payload: CreatePayload, key: string): boolean {
+  return readTags(payload).some((tag) => tag.key === key && tag.value === undefined);
+}
+
 function setTag(payload: CreatePayload, key: string, value?: string): void {
   const tags = readTags(payload).filter((tag) => tag.key !== key);
   tags.push(value === undefined ? { key } : { key, value });
@@ -146,12 +150,8 @@ async function promptMissingText(
 }
 
 async function promptMissingTags(session: PromptSession, payload: CreatePayload): Promise<void> {
-  if (readTags(payload).length > 0) {
-    return;
-  }
-
   output.write('Optional tags: enter KEY or KEY=VALUE. Leave blank to finish.\n');
-  const tags: CreateTag[] = [];
+  const tags = readTags(payload);
   while (true) {
     const spec = await promptLine(session, 'Optional: tag', { allowBlank: true });
     if (!spec) {
@@ -391,7 +391,7 @@ async function promptFieldStates(
   step: Extract<CreatePromptStep, { kind: 'field-states' }>,
 ): Promise<void> {
   for (const field of step.fields) {
-    if (hasTag(payload, field.optionalKey) || hasTag(payload, field.requiredKey)) {
+    if (hasBooleanTag(payload, field.optionalKey) || hasBooleanTag(payload, field.requiredKey)) {
       continue;
     }
     while (true) {
@@ -500,6 +500,65 @@ async function promptStorePayments(session: PromptSession, payload: CreatePayloa
   }
 }
 
+async function promptFreeShipping(session: PromptSession, payload: CreatePayload): Promise<void> {
+  if (hasTag(payload, 'F')) {
+    return;
+  }
+
+  while (true) {
+    const mode = (await promptLine(
+      session,
+      'Optional: free shipping (none/always/threshold) [none]',
+      { allowBlank: true },
+    )).toLowerCase();
+    if (!mode || mode === 'none') {
+      return;
+    }
+    if (mode === 'always') {
+      setTag(payload, 'F');
+      break;
+    }
+    if (mode === 'threshold') {
+      const amount = await promptLine(session, 'Required: free shipping threshold', { required: true });
+      setTag(payload, 'F', parseHostedTextValue('cents', amount));
+      break;
+    }
+    output.write('Choose none, always, or threshold.\n');
+  }
+
+  if (await promptYesNo(session, 'Optional: also apply free shipping internationally?', false)) {
+    setTag(payload, 'J');
+  }
+}
+
+async function promptItemFieldState(
+  session: PromptSession,
+  itemSpecParts: string[],
+  label: string,
+  optionalKey: string,
+  requiredKey: string,
+): Promise<void> {
+  while (true) {
+    const answer = (await promptLine(
+      session,
+      `Optional: ${label} for this item (default/optional/required) [default]`,
+      { allowBlank: true },
+    )).toLowerCase();
+    if (!answer || answer === 'default') {
+      return;
+    }
+    if (answer === 'optional') {
+      itemSpecParts.push(`tag=${optionalKey}`);
+      return;
+    }
+    if (answer === 'required') {
+      itemSpecParts.push(`tag=${requiredKey}`);
+      return;
+    }
+    output.write('Choose default, optional, or required.\n');
+  }
+}
+
 async function promptStoreItems(session: PromptSession, payload: CreatePayload): Promise<void> {
   if (readItems(payload).length > 0) {
     return;
@@ -512,7 +571,7 @@ async function promptStoreItems(session: PromptSession, payload: CreatePayload):
     const name = await promptLine(session, 'Required: item name', { required: true });
     const price = await promptLine(session, 'Required: item price', { required: true });
     const description = await promptLine(session, 'Optional: item description (leave blank to skip)', { allowBlank: true });
-    const image = await promptLine(session, 'Optional: item image URL (leave blank to skip)', { allowBlank: true });
+    const image = await promptLine(session, 'Optional: item images (space-separated; leave blank to skip)', { allowBlank: true });
 
     const itemSpecParts = [
       `name=${name}`,
@@ -520,6 +579,38 @@ async function promptStoreItems(session: PromptSession, payload: CreatePayload):
       ...(description ? [`description=${description}`] : []),
       ...(image ? [`image=${image}`] : []),
     ];
+
+    if (await promptYesNo(session, 'Optional: digital item?', false)) {
+      itemSpecParts.push('tag=d');
+    }
+    if (await promptYesNo(session, 'Optional: featured item?', false)) {
+      itemSpecParts.push('tag=f');
+    }
+    const category = await promptLine(session, 'Optional: item category (leave blank to skip)', { allowBlank: true });
+    if (category) {
+      itemSpecParts.push(`tag=g=${category}`);
+    }
+    const maxQuantity = await promptLine(session, 'Optional: maximum quantity per order (leave blank for unlimited)', { allowBlank: true });
+    if (maxQuantity) {
+      itemSpecParts.push(`tag=q=${maxQuantity}`);
+    }
+    const variants = await promptLine(session, 'Optional: item variants (comma-separated; leave blank to skip)', { allowBlank: true });
+    if (variants) {
+      itemSpecParts.push(`tag=v=${variants.replace(/,\s*/g, '.')}`);
+    }
+    const weight = await promptLine(session, 'Optional: item weight (leave blank to skip)', { allowBlank: true });
+    if (weight) {
+      itemSpecParts.push(`tag=W=${weight}`);
+    }
+    await promptItemFieldState(session, itemSpecParts, 'collect buyer email', 'e', 'E');
+    await promptItemFieldState(session, itemSpecParts, 'collect buyer name', 'n', 'N');
+    await promptItemFieldState(session, itemSpecParts, 'collect buyer address', 'a', 'A');
+    await promptItemFieldState(session, itemSpecParts, 'collect buyer phone', 'p', 'P');
+    await promptItemFieldState(session, itemSpecParts, 'collect buyer Nostr npub', 'z', 'Z');
+    const customText = await promptLine(session, 'Optional: custom checkout text field (leave blank to skip)', { allowBlank: true });
+    if (customText) {
+      itemSpecParts.push(`tag=t=${customText}`);
+    }
 
     output.write('Optional item tags: enter KEY or KEY=VALUE. Leave blank to finish.\n');
     while (true) {
@@ -603,6 +694,10 @@ async function promptStep(session: PromptSession, payload: CreatePayload, step: 
   }
   if (step.kind === 'store-payments') {
     await promptStorePayments(session, payload);
+    return;
+  }
+  if (step.kind === 'free-shipping') {
+    await promptFreeShipping(session, payload);
     return;
   }
   await promptMissingTags(session, payload);
