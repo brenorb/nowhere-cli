@@ -19,18 +19,9 @@ import {
   type StoreData,
   type Tag,
 } from '@nowhere/codec';
+import type { ToolSlug } from './create-tools.js';
 import { computeVerificationSummary, fragmentToUrl } from './fragments.js';
 import { normalizeNowherePubkey } from './keys.js';
-
-export type ToolSlug =
-  | 'store'
-  | 'event'
-  | 'fundraiser'
-  | 'petition'
-  | 'message'
-  | 'drop'
-  | 'art'
-  | 'forum';
 
 type EncodableSite =
   | StoreData

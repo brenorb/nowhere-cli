@@ -269,6 +269,45 @@ describe('long-form create command', () => {
     });
   });
 
+  test('store creation fails clearly when no items are provided', async () => {
+    const seller = generateSecretMaterial();
+    const stderr = await cliFailure(
+      'create',
+      'store',
+      '--name',
+      'Freedom Market',
+      '--sign-secret',
+      seller.nsec,
+      '--json',
+    );
+
+    expect(stderr).toContain('Store creation requires at least one item.');
+  });
+
+  test('drop creation fails clearly when the description is missing', async () => {
+    const stderr = await cliFailure(
+      'create',
+      'drop',
+      '--name',
+      'Field Notes',
+      '--json',
+    );
+
+    expect(stderr).toContain('Description is required for drop creation.');
+  });
+
+  test('art creation fails clearly when SVG markup is missing', async () => {
+    const stderr = await cliFailure(
+      'create',
+      'art',
+      '--name',
+      'Stencil',
+      '--json',
+    );
+
+    expect(stderr).toContain('SVG markup is required for art creation.');
+  });
+
   test('rejects mixing JSON input with long-form builder flags', async () => {
     await withJsonFile({ name: 'Field Notes', description: 'Line one' }, async (path) => {
       const stderr = await cliFailure(
