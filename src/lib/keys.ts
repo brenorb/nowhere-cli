@@ -50,12 +50,16 @@ export function generateSecretMaterial(): SecretMaterial {
   return describeSecretBytes(generateSecretKey());
 }
 
+function stripNostrUriPrefix(value: string): string {
+  return value.replace(/^nostr:/i, '').trim();
+}
+
 export function normalizeNowherePubkey(value: unknown): string {
   if (typeof value !== 'string') {
     return '';
   }
 
-  const trimmed = value.trim();
+  const trimmed = stripNostrUriPrefix(value.trim());
   if (!trimmed) {
     return '';
   }
@@ -70,6 +74,10 @@ export function normalizeNowherePubkey(value: unknown): string {
 
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
     return bytesToBase64url(hexToBytes(trimmed.toLowerCase()));
+  }
+
+  if (/^(npub1|nprofile1|note1|nevent1|naddr1|nrelay1)/i.test(trimmed)) {
+    throw new Error('Expected an npub public key, but received a different nostr identifier.');
   }
 
   return trimmed;
