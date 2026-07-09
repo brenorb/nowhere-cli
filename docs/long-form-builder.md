@@ -1,6 +1,24 @@
 # Long-Form Builder Interface
 
-The `create` command can now build Nowhere sites without a JSON file.
+The `create` command can now build Nowhere sites without a JSON file, and can switch into an interactive prompt flow when you pass `--interactive`.
+
+## Interactive mode
+
+Interactive mode works in two forms:
+
+```bash
+pnpm cli create drop --interactive --json
+pnpm cli create --interactive --json
+```
+
+Behavior:
+
+- `create <tool> --interactive` prompts only for the missing fields for that tool
+- `create --interactive` asks which tool you want first, then fills the missing fields
+- passed flags still win, so `--name`, `--description`, `--pubkey`, `--item`, `--svg`, and `--title` prefill the prompt flow
+- prompts are labeled as required or optional and end with a confirmation step before encoding
+
+Interactive mode is intentionally separate from `--input <path>`.
 
 ## Common fields
 
@@ -18,6 +36,7 @@ pnpm cli create drop \
 Available common flags:
 
 - `--name <text>`
+- `--title <text>` for `message` sites, as sugar for the message title tag
 - `--description <text>`
 - `--description-file <path>`
 - `--image <url>`
@@ -79,8 +98,10 @@ For `store`, `petition`, and `forum`, the CLI will infer the required owner pubk
 
 ## Guardrails
 
+- Use either `--input <path>` or `--interactive`, not both.
 - Use either `--input <path>` or long-form flags, not both.
 - Use either `--description` or `--description-file`, not both.
 - Use either `--svg` or `--svg-file`, not both.
 - `--item` only works with `create store`.
+- `--title` only works with `create message`.
 - `--svg` and `--svg-file` only work with `create art`.
