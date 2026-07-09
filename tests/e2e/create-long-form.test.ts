@@ -249,6 +249,57 @@ describe('long-form create command', () => {
     expect(created.siteData.description).toBe('Status update');
   });
 
+  test('interactive event mode encodes hosted builder fields as canonical tags', async () => {
+    const { json: created, stderr } = await cliInteractive(
+      [
+        '',
+        '',
+        '',
+        'u',
+        '#ff0099',
+        'Nowhere',
+        '2026-08-01',
+        '20:30',
+        '',
+        'Warehouse',
+        '',
+        '',
+        'Doors at 8',
+        '12.50',
+        'EUR',
+        '',
+        '',
+        '120',
+        '18+',
+        '',
+        'n',
+        'events@example.com',
+        'y',
+      ],
+      'create',
+      'event',
+      '--interactive',
+      '--name',
+      'Night Market',
+      '--json',
+    );
+
+    expect(stderr).toContain('Optional: style [Generic]');
+    expect(created.siteData.tags).toEqual([
+      { key: 'T', value: 'u' },
+      { key: 'C', value: 'FF0099' },
+      { key: 'o', value: 'Nowhere' },
+      { key: 'D', value: '202608012030' },
+      { key: 'L', value: 'Warehouse' },
+      { key: 'b', value: 'Doors at 8' },
+      { key: '$', value: '1250' },
+      { key: 'K', value: 'EUR' },
+      { key: 'q', value: '120' },
+      { key: 'R', value: '18+' },
+      { key: 'I', value: 'events@example.com' },
+    ]);
+  });
+
   test('interactive store mode can collect repeated item entries', async () => {
     const seller = generateSecretMaterial();
     const { json: created } = await cliInteractive(
