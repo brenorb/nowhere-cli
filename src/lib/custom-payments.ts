@@ -10,7 +10,26 @@ function escapeField(value: string): string {
 }
 
 function unescapeField(value: string): string {
-  return value.replace(/\\o/g, ':').replace(/\\c/g, ',').replace(/\\\\/g, '\\');
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '\\' || index + 1 >= value.length) {
+      result += value[index];
+      continue;
+    }
+
+    const escaped = value[index + 1];
+    if (escaped === 'o') {
+      result += ':';
+    } else if (escaped === 'c') {
+      result += ',';
+    } else if (escaped === '\\') {
+      result += '\\';
+    } else {
+      result += `\\${escaped}`;
+    }
+    index += 1;
+  }
+  return result;
 }
 
 function splitEntries(raw: string): string[] {
