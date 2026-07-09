@@ -195,6 +195,26 @@ describe('long-form create command', () => {
     expect(created.siteData.tags).toEqual([{ key: 'V' }]);
   });
 
+  test('interactive mode accepts pubkeys copied as nostr:npub URIs', async () => {
+    const author = generateSecretMaterial();
+    const { json: created } = await cliInteractive(
+      [
+        'Line one',
+        `nostr:${author.npub}`,
+        '',
+        'y',
+      ],
+      'create',
+      'drop',
+      '--interactive',
+      '--name',
+      'Field Notes',
+      '--json',
+    );
+
+    expect(created.siteData.pubkey).toBe(author.nowherePubkey);
+  });
+
   test('interactive mode can prompt for the tool before collecting its fields', async () => {
     const { json: created } = await cliInteractive(
       [
@@ -278,5 +298,21 @@ describe('long-form create command', () => {
 
       expect(stderr).toContain('Choose either --input <path> or --interactive, not both.');
     });
+  });
+
+  test('reports a clearer error for non-npub nostr identifiers in pubkey fields', async () => {
+    const stderr = await cliFailure(
+      'create',
+      'drop',
+      '--name',
+      'Field Notes',
+      '--description',
+      'Line one',
+      '--pubkey',
+      'nostr:note1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      '--json',
+    );
+
+    expect(stderr).toContain('Expected an npub public key, but received a different nostr identifier.');
   });
 });
