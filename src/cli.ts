@@ -1,5 +1,6 @@
 import { bytesToBase64url, bytesToHex, decryptFragment, encryptFragment, hexToBytes, type SiteData } from '@nowhere/codec';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
@@ -991,11 +992,12 @@ async function filterModeratedEntries<T>(options: {
   ));
 }
 
+const packageManifest = createRequire(import.meta.url)('../package.json') as { version: string };
 const program = new Command();
 program
   .name('nowhere')
   .description('CLI for Nowhere fragments, signing, and encryption.')
-  .version('0.1.0')
+  .version(packageManifest.version)
   .showHelpAfterError();
 
 program
