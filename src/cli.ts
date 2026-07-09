@@ -13,8 +13,9 @@ import {
   signerFromSecret,
   type CliSigner,
 } from './lib/active-signer.js';
-import { buildSite, deepMerge, type ToolSlug } from './lib/builders.js';
+import { buildSite, deepMerge } from './lib/builders.js';
 import { DEFAULT_RENDERER_ORIGIN } from './lib/constants.js';
+import { toolChoices, type ToolSlug } from './lib/create-tools.js';
 import {
   computeVerificationSummary,
   fragmentToUrl,
@@ -199,17 +200,6 @@ async function watchEntries<T extends { eventId: string }>(options: {
     process.off('SIGTERM', stop);
   }
 }
-
-const toolChoices: ToolSlug[] = [
-  'store',
-  'event',
-  'fundraiser',
-  'petition',
-  'message',
-  'drop',
-  'art',
-  'forum',
-];
 
 async function signFragmentWithSecret(input: string, secret: string) {
   return signFragmentWithSigner(input, signerFromSecret(secret));

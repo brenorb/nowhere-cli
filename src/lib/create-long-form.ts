@@ -1,7 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { nip19 } from 'nostr-tools';
 import type { CliSigner } from './active-signer.js';
-import type { ToolSlug } from './builders.js';
+import {
+  toolRequiresOwnerPubkey,
+  toolSupportsItems,
+  toolSupportsSvg,
+  toolSupportsTitle,
+  validateCreatePayloadRequirements,
+  type ToolSlug,
+} from './create-tools.js';
 import { readJsonInput } from './io.js';
 
 export interface CreateCommandOptions {
@@ -175,11 +182,7 @@ export function hasLongFormCreateOptions(options: CreateCommandOptions): boolean
   );
 }
 
-export function toolRequiresOwnerPubkey(tool: ToolSlug): boolean {
-  return tool === 'store' || tool === 'petition' || tool === 'forum';
-}
-
-function upsertMessageTitleTag(payload: Record<string, unknown>, title: string): void {
+export function upsertMessageTitleTag(payload: Record<string, unknown>, title: string): void {
   const existingTags = Array.isArray(payload.tags) ? payload.tags as Array<{ key?: unknown; value?: unknown }> : [];
   if (existingTags.some((tag) => tag.key === 't' && typeof tag.value === 'string' && tag.value.trim())) {
     fail('Choose either --title or a "t" tag, not both.');
@@ -193,13 +196,13 @@ function validateToolSpecificFlags(tool: ToolSlug | undefined, options: CreateCo
     return;
   }
 
-  if (tool !== 'store' && options.item && options.item.length > 0) {
+  if (!toolSupportsItems(tool) && options.item && options.item.length > 0) {
     fail('--item is only supported for store creation.');
   }
-  if (tool !== 'art' && (options.svg !== undefined || options.svgFile !== undefined)) {
+  if (!toolSupportsSvg(tool) && (options.svg !== undefined || options.svgFile !== undefined)) {
     fail('--svg and --svg-file are only supported for art creation.');
   }
-  if (tool !== 'message' && options.title !== undefined) {
+  if (!toolSupportsTitle(tool) && options.title !== undefined) {
     fail('--title is only supported for message creation.');
   }
 }
@@ -292,11 +295,15 @@ export async function resolveCreateRawInput(
   validateCreateCommandOptions(tool, options, 'non-interactive');
 
   if (typeof options.input === 'string') {
-    return requireObject(
+    const payload = requireObject(
       await readJsonInput(options.input),
       'Expected create input to be a JSON object or long-form builder fields.',
     );
+    validateCreatePayloadRequirements(tool, payload);
+    return payload;
   }
 
-  return buildCreatePayloadFromOptions(tool, options, signer);
+  const payload = await buildCreatePayloadFromOptions(tool, options, signer);
+  validateCreatePayloadRequirements(tool, payload);
+  return payload;
 }
