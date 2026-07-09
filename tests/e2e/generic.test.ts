@@ -1,11 +1,13 @@
 import { encodeMessage, type MessageData } from '@nowhere/codec';
 import { describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { getPublicKey } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
+const packageManifest = createRequire(import.meta.url)('../../package.json') as { version: string };
 const cliArgs = ['--import', 'tsx', 'src/cli.ts'];
 const cli = async (...args: string[]) => {
   const result = await execFileAsync('node', [...cliArgs, ...args], {
@@ -100,7 +102,7 @@ describe('generic CLI commands', () => {
   test('root version flag prints the package version', async () => {
     const output = await cliText('--version');
 
-    expect(output).toBe('0.1.0');
+    expect(output).toBe(packageManifest.version);
   });
 });
 

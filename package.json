@@ -1,10 +1,36 @@
 {
   "name": "nowhere-cli",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "CLI for creating, signing, encrypting, and managing Nowhere sites.",
+  "private": false,
   "type": "module",
+  "license": "AGPL-3.0-only",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "nowhere": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/project-maintainer/nowhere-cli.git"
+  },
+  "homepage": "https://github.com/project-maintainer/nowhere-cli#readme",
+  "bugs": {
+    "url": "https://github.com/project-maintainer/nowhere-cli/issues"
+  },
+  "keywords": [
+    "nowhere",
+    "nostr",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",
@@ -13,16 +39,18 @@
     "lint:fix": "eslint --fix \"src/**/*.ts\" \"tests/**/*.ts\" tsup.config.ts vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm check"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
-    "@nowhere/codec": "file:../source-nowhere/nowhere/packages/codec",
     "commander": "^14.0.0",
     "nostr-tools": "^2.17.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@nowhere/codec": "file:../source-nowhere/nowhere/packages/codec",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
