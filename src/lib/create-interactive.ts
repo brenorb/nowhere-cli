@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline/promises';
 import { stderr as output, stdin as input } from 'node:process';
 import type { CliSigner } from './active-signer.js';
+import { CONTACT_PLATFORMS, serializeContacts, type ContactEntry } from './contacts.js';
 import {
   buildCreatePayloadFromOptions,
   parseStoreItemSpec,
@@ -18,6 +19,8 @@ import {
   type CreateTagTextFormat,
   type ToolSlug,
 } from './create-tools.js';
+import { serializeCustomPayments, type CustomPaymentMethod } from './custom-payments.js';
+import { serializeTipMethods, type TipMethod } from './tips.js';
 
 type CreatePayload = Record<string, unknown>;
 type CreateTag = { key: string; value?: string };
@@ -320,6 +323,183 @@ async function promptHostedTagBoolean(
   }
 }
 
+function escapePipePart(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\p');
+}
+
+function escapeLineupPart(value: string): string {
+  return escapePipePart(value).replace(/\./g, '\\d').replace(/:/g, '\\o');
+}
+
+async function promptHostedTagList(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'tag-list' }>,
+): Promise<void> {
+  if (hasTag(payload, step.tagKey)) {
+    return;
+  }
+
+  output.write(`Optional ${step.label}: leave blank to finish.\n`);
+  const values: string[] = [];
+  while (!step.maxItems || values.length < step.maxItems) {
+    const value = await promptLine(session, `Optional: ${step.itemLabel}`, { allowBlank: true });
+    if (!value) {
+      break;
+    }
+    values.push(escapePipePart(value));
+  }
+  if (values.length > 0) {
+    setTag(payload, step.tagKey, values.join('\\p'));
+  }
+}
+
+async function promptHostedTagPairs(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'tag-pairs' }>,
+): Promise<void> {
+  if (hasTag(payload, step.tagKey)) {
+    return;
+  }
+
+  output.write(`Optional ${step.label}: leave the first field blank to finish.\n`);
+  const entries: string[] = [];
+  while (true) {
+    const first = await promptLine(session, `Optional: ${step.firstLabel}`, { allowBlank: true });
+    if (!first) {
+      break;
+    }
+    const second = await promptLine(session, `Optional: ${step.secondLabel}`, { allowBlank: true });
+    if (step.format === 'lineup') {
+      entries.push(second ? `${escapeLineupPart(first)}:${escapeLineupPart(second)}` : escapeLineupPart(first));
+    } else {
+      if (/[|;]/.test(first) || /[|;]/.test(second)) {
+        fail(`${step.label} cannot contain "|" or ";".`);
+      }
+      entries.push(`${first}|${second}`);
+    }
+  }
+  if (entries.length > 0) {
+    setTag(payload, step.tagKey, entries.join(step.format === 'lineup' ? '\\p' : ';'));
+  }
+}
+
+async function promptFieldStates(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'field-states' }>,
+): Promise<void> {
+  for (const field of step.fields) {
+    if (hasTag(payload, field.optionalKey) || hasTag(payload, field.requiredKey)) {
+      continue;
+    }
+    while (true) {
+      const answer = (await promptLine(
+        session,
+        `Optional: ${field.label} (off/optional/required) [off]`,
+        { allowBlank: true },
+      )).toLowerCase();
+      if (!answer || answer === 'off') {
+        break;
+      }
+      if (answer === 'optional') {
+        setTag(payload, field.optionalKey);
+        break;
+      }
+      if (answer === 'required') {
+        setTag(payload, field.requiredKey);
+        break;
+      }
+      output.write('Choose off, optional, or required.\n');
+    }
+  }
+}
+
+async function promptContacts(session: PromptSession, payload: CreatePayload): Promise<void> {
+  if (hasTag(payload, 'j') || !await promptYesNo(session, 'Optional: add additional contact methods?', false)) {
+    return;
+  }
+
+  const contacts: ContactEntry[] = [];
+  output.write(`Contact methods: ${CONTACT_PLATFORMS.map((platform) => `${platform.name}=${platform.code}`).join(', ')}\n`);
+  while (true) {
+    const answer = await promptLine(session, 'Optional: contact method (leave blank to finish)', { allowBlank: true });
+    if (!answer) {
+      break;
+    }
+    const normalized = answer.toLowerCase();
+    const platform = CONTACT_PLATFORMS.find((candidate) => (
+      candidate.code.toLowerCase() === normalized || candidate.name.toLowerCase() === normalized
+    ));
+    if (!platform || contacts.some((contact) => contact.code === platform.code)) {
+      output.write('Choose an unused contact method from the list.\n');
+      continue;
+    }
+    const customName = platform.code === '*'
+      ? await promptLine(session, 'Required: custom contact name', { required: true })
+      : undefined;
+    const handle = await promptLine(session, 'Required: contact handle or address', { required: true });
+    contacts.push({ code: platform.code, customName, handle });
+  }
+  if (contacts.length > 0) {
+    setTag(payload, 'j', serializeContacts(contacts));
+  }
+}
+
+async function promptTips(session: PromptSession, payload: CreatePayload): Promise<void> {
+  if (hasTag(payload, 'l')) {
+    return;
+  }
+
+  const methods: TipMethod[] = [];
+  const lightning = await promptLine(session, 'Optional: Lightning address (leave blank to skip)', { allowBlank: true });
+  if (lightning) {
+    methods.push({ type: 'lightning', label: 'Lightning', value: lightning });
+  }
+  while (await promptYesNo(session, 'Optional: add a custom tip method?', false)) {
+    const label = await promptLine(session, 'Required: tip method name', { required: true });
+    const value = await promptLine(session, 'Required: tip address or handle', { required: true });
+    const showQr = await promptYesNo(session, 'Optional: show this tip as a QR code?', false);
+    methods.push({ type: 'custom', label, value, showQr });
+  }
+  if (methods.length > 0) {
+    setTag(payload, 'l', serializeTipMethods(methods));
+  }
+}
+
+async function promptStorePayments(session: PromptSession, payload: CreatePayload): Promise<void> {
+  if (!hasTag(payload, 'l')) {
+    const lightning = await promptLine(session, 'Optional: store Lightning address (leave blank to skip)', { allowBlank: true });
+    if (lightning) {
+      setTag(payload, 'l', lightning);
+    }
+  }
+  if (!hasTag(payload, 'j')) {
+    const payId = await promptLine(session, 'Optional: PayID address (leave blank to skip)', { allowBlank: true });
+    if (payId) {
+      setTag(payload, 'j', payId);
+    }
+  } else {
+    output.write('Optional PayID skipped because tag "j" is already used by additional contact methods.\n');
+  }
+  if (hasTag(payload, '5')) {
+    return;
+  }
+
+  const methods: CustomPaymentMethod[] = [];
+  while (await promptYesNo(session, 'Optional: add a custom payment method?', false)) {
+    const label = await promptLine(session, 'Required: payment method name', { required: true });
+    const currency = (await promptLine(session, 'Required: payment currency code', { required: true })).toUpperCase();
+    const address = await promptLine(session, 'Required: payment address or handle', { required: true });
+    const showQr = await promptYesNo(session, 'Optional: show this payment as a QR code?', false);
+    methods.push({ label, currency, address, showQr });
+  }
+  if (methods.length > 0) {
+    setTag(payload, '5', serializeCustomPayments(methods));
+  }
+}
+
 async function promptStoreItems(session: PromptSession, payload: CreatePayload): Promise<void> {
   if (readItems(payload).length > 0) {
     return;
@@ -399,6 +579,30 @@ async function promptStep(session: PromptSession, payload: CreatePayload, step: 
   }
   if (step.kind === 'tag-boolean') {
     await promptHostedTagBoolean(session, payload, step);
+    return;
+  }
+  if (step.kind === 'tag-list') {
+    await promptHostedTagList(session, payload, step);
+    return;
+  }
+  if (step.kind === 'tag-pairs') {
+    await promptHostedTagPairs(session, payload, step);
+    return;
+  }
+  if (step.kind === 'field-states') {
+    await promptFieldStates(session, payload, step);
+    return;
+  }
+  if (step.kind === 'contacts') {
+    await promptContacts(session, payload);
+    return;
+  }
+  if (step.kind === 'tips') {
+    await promptTips(session, payload);
+    return;
+  }
+  if (step.kind === 'store-payments') {
+    await promptStorePayments(session, payload);
     return;
   }
   await promptMissingTags(session, payload);

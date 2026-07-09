@@ -236,7 +236,6 @@ describe('long-form create command', () => {
         '',
         '',
         '',
-        'y',
       ],
       'create',
       '--interactive',
@@ -269,11 +268,14 @@ describe('long-form create command', () => {
         'EUR',
         '',
         '',
+        '',
         '120',
         '18+',
         '',
+        '',
         'n',
         'events@example.com',
+        'n',
         'y',
       ],
       'create',
@@ -300,6 +302,46 @@ describe('long-form create command', () => {
     ]);
   });
 
+  test('interactive message mode collects hosted tip and contact methods', async () => {
+    const { json: created, stderr } = await cliInteractive(
+      [
+        '',
+        '',
+        'tips@example.com',
+        'y',
+        'PIX',
+        'pix-key',
+        'y',
+        'n',
+        'y',
+        'alice@example.com',
+        'y',
+        'Telegram',
+        '@alice',
+        '',
+        'y',
+      ],
+      'create',
+      'message',
+      '--interactive',
+      '--name',
+      'Alice',
+      '--title',
+      'Dispatch',
+      '--json',
+    );
+
+    expect(stderr).toContain('Optional: Lightning address');
+    expect(stderr).toContain('Contact methods:');
+    expect(created.siteData.tags).toEqual([
+      { key: 't', value: 'Dispatch' },
+      { key: 'l', value: 'tips@example.com,*!PIX:pix-key' },
+      { key: 'G' },
+      { key: 'I', value: 'alice@example.com' },
+      { key: 'j', value: 'T@alice' },
+    ]);
+  });
+
   test('interactive store mode can collect repeated item entries', async () => {
     const seller = generateSecretMaterial();
     const { json: created } = await cliInteractive(
@@ -314,7 +356,6 @@ describe('long-form create command', () => {
         '',
         'n',
         '',
-        'y',
       ],
       'create',
       'store',
