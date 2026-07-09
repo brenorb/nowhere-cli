@@ -25,6 +25,10 @@ The CLI already injects a few upstream-style defaults when you omit them:
 - `1`, `2`: custom relay lists where that tool supports advanced relay routing
 - Boolean tags are represented as `{ "key": "X", "value": null }` in JSON and stored upstream without a value
 
+## Create currencies
+
+Interactive creation uses one shared currency list for stores, events, and fundraisers: `USD`, `EUR`, `GBP`, `JPY`, `CAD`, `AUD`, `CHF`, `CNY`, `BRL`, `MXN`, `BTC`, and `SATS`.
+
 ## Tool tag cheat sheet
 
 ### `event`

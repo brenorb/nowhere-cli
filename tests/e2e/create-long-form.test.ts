@@ -1,9 +1,9 @@
-import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 
@@ -266,7 +266,7 @@ describe('long-form create command', () => {
         '',
         'Doors at 8',
         '12.50',
-        'EUR',
+        'BRL',
         '',
         '',
         '',
@@ -298,7 +298,7 @@ describe('long-form create command', () => {
       { key: 'L', value: 'Warehouse' },
       { key: 'b', value: 'Doors at 8' },
       { key: '$', value: '1250' },
-      { key: 'K', value: 'EUR' },
+      { key: 'K', value: 'BRL' },
       { key: 'q', value: '120' },
       { key: 'R', value: '18+' },
       { key: 'I', value: 'events@example.com' },
