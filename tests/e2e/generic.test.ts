@@ -13,6 +13,12 @@ const cli = async (...args: string[]) => {
   });
   return JSON.parse(result.stdout);
 };
+const cliText = async (...args: string[]) => {
+  const result = await execFileAsync('node', [...cliArgs, ...args], {
+    cwd: '/Users/REDACTED',
+  });
+  return result.stdout.trim();
+};
 
 function sampleMessage(nowherePubkey: string): MessageData {
   return {
@@ -89,6 +95,12 @@ describe('generic CLI commands', () => {
     expect(inspected.signed).toBe(true);
     expect(inspected.site.pubkey).toBe(material.nowherePubkey);
     expect(inspected.signaturePubkeyHex).toBe(getPublicKey(Buffer.from(material.secretHex, 'hex')));
+  });
+
+  test('root version flag prints the package version', async () => {
+    const output = await cliText('--version');
+
+    expect(output).toBe('0.1.0');
   });
 });
 

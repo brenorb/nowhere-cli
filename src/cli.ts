@@ -1005,6 +1005,7 @@ const program = new Command();
 program
   .name('nowhere')
   .description('CLI for Nowhere fragments, signing, and encryption.')
+  .version('0.1.0')
   .showHelpAfterError();
 
 program
@@ -1233,7 +1234,7 @@ program
   .description('Create one of the eight Nowhere site types from JSON input, long-form CLI flags, or interactive prompts.')
   .argument('[tool]', `One of: ${toolChoices.join(', ')}`)
   .option('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
-  .option('--interactive', 'Prompt for the missing builder fields instead of requiring every value up front.')
+  .option('-i, --interactive', 'Prompt for the missing builder fields instead of requiring every value up front.')
   .option('--name <text>', 'Site name for long-form builder mode.')
   .option('--title <text>', 'Message title for long-form builder mode.')
   .option('--description <text>', 'Site description/body for long-form builder mode.')
