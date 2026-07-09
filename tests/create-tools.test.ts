@@ -29,7 +29,37 @@ function structuredStepKinds(tool: ToolSlug): string[] {
     .filter((kind) => structuredKinds.has(kind));
 }
 
+function currencyChoices(tool: 'store' | 'event' | 'fundraiser'): string[] {
+  const currencyTag = tool === 'event' ? 'K' : '$';
+  const step = getCreateToolDefinition(tool).promptSteps.find((candidate) => (
+    candidate.kind === 'tag-choice' && candidate.tagKey === currencyTag
+  ));
+
+  expect(step?.kind).toBe('tag-choice');
+  return step?.kind === 'tag-choice' ? step.choices.map((choice) => choice.value) : [];
+}
+
 describe('hosted builder create schema', () => {
+  test.each(['store', 'event', 'fundraiser'] as const)(
+    'offers the shared create currency list for %s',
+    (tool) => {
+      expect(currencyChoices(tool)).toEqual([
+        'USD',
+        'EUR',
+        'GBP',
+        'JPY',
+        'CAD',
+        'AUD',
+        'CHF',
+        'CNY',
+        'BRL',
+        'MXN',
+        'BTC',
+        'SATS',
+      ]);
+    },
+  );
+
   test.each([
     ['store', ['b', '$', 'w', 'r', 'Y', 'Q', 'G', 'I', 'L', 's', 'S', 'h', 'H', 'm', 'B', 'X', 'D', 'c', 'x']],
     ['event', ['T', 'C', 'o', 'D', 'd', 'L', 'l', 'O', 'b', '$', 'K', 'r', 'A', 'q', 'R', 'v', 'G', 'I']],

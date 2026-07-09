@@ -115,11 +115,8 @@ export interface CreateToolDefinition {
 
 type CreatePayload = Record<string, unknown>;
 
-const currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'BRL', 'MXN', 'BTC']
+const createCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'BRL', 'MXN', 'BTC', 'SATS']
   .map((value) => ({ label: value === 'BTC' ? 'BTC (sats)' : value, value }));
-
-const eventCurrencies = ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'JPY', 'CHF', 'BTC', 'SATS']
-  .map((value) => ({ label: value, value }));
 
 const eventStyles: readonly CreatePromptChoice[] = [
   { label: 'Generic', value: 'g' },
@@ -213,7 +210,7 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'text', key: 'pubkey', label: 'owner pubkey', required: true },
       { kind: 'items' },
       { kind: 'tag-text', tagKey: 'b', label: 'description' },
-      { kind: 'tag-choice', tagKey: '$', label: 'currency', choices: currencies, defaultValue: 'USD' },
+      { kind: 'tag-choice', tagKey: '$', label: 'currency', choices: createCurrencies, defaultValue: 'USD' },
       {
         kind: 'tag-choice',
         tagKey: 'w',
@@ -279,7 +276,7 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'tag-text', tagKey: 'O', label: 'online or stream link' },
       { kind: 'tag-text', tagKey: 'b', label: 'event details' },
       { kind: 'tag-text', tagKey: '$', label: 'admission price', format: 'cents' },
-      { kind: 'tag-choice', tagKey: 'K', label: 'admission currency', choices: eventCurrencies, defaultValue: '' },
+      { kind: 'tag-choice', tagKey: 'K', label: 'admission currency', choices: createCurrencies, defaultValue: '' },
       { kind: 'tag-text', tagKey: 'r', label: 'RSVP or ticket link' },
       {
         kind: 'tag-pairs',
@@ -312,7 +309,7 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
       { kind: 'text', key: 'image', label: 'cover image URLs (space-separated)', required: false },
       { kind: 'text', key: 'pubkey', label: 'pubkey', required: false },
       { kind: 'tag-text', tagKey: 'T', label: 'campaign creator' },
-      { kind: 'tag-choice', tagKey: '$', label: 'currency', choices: currencies, defaultValue: 'USD' },
+      { kind: 'tag-choice', tagKey: '$', label: 'currency', choices: createCurrencies, defaultValue: 'USD' },
       { kind: 'tag-text', tagKey: 'g', label: 'goal amount', format: 'cents' },
       { kind: 'tag-text', tagKey: 'h', label: 'deadline (YYYY-MM-DD)' },
       { kind: 'tag-text', tagKey: 't', label: 'tagline' },
