@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,20 +8,54 @@ import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
 const cwd = '/Users/breno/Documents/code/PROJECTS/HRF_GRANT/nowhere-cli';
+const cliArgs = ['--import', 'tsx', 'src/cli.ts'];
 
 async function cli(...args: string[]) {
-  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+  const result = await execFileAsync('node', [...cliArgs, ...args], { cwd });
   return JSON.parse(result.stdout);
 }
 
 async function cliFailure(...args: string[]) {
   try {
-    await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], { cwd });
+    await execFileAsync('node', [...cliArgs, ...args], { cwd });
     throw new Error('Expected the CLI command to fail.');
   } catch (error) {
     const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
     return stderr;
   }
+}
+
+async function cliInteractive(answers: string[], ...args: string[]) {
+  const child = spawn('node', [...cliArgs, ...args], { cwd });
+
+  let stdout = '';
+  let stderr = '';
+
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+
+  child.stdin.write(`${answers.join('\n')}\n`);
+  child.stdin.end();
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+
+  if (exitCode !== 0) {
+    throw new Error(`Interactive CLI failed with code ${exitCode}: ${stderr}`);
+  }
+
+  return {
+    json: JSON.parse(stdout),
+    stderr,
+  };
 }
 
 async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void>) {
@@ -86,6 +120,21 @@ describe('long-form create command', () => {
     );
   });
 
+  test('supports a message title flag as sugar for the title tag', async () => {
+    const created = await cli(
+      'create',
+      'message',
+      '--name',
+      'Alice',
+      '--title',
+      'Dispatch',
+      '--json',
+    );
+
+    expect(created.siteData.name).toBe('Alice');
+    expect(created.siteData.tags).toEqual([{ key: 't', value: 'Dispatch' }]);
+  });
+
   test('preserves store items and infers the owner pubkey from the signing secret', async () => {
     const seller = generateSecretMaterial();
 
@@ -122,6 +171,84 @@ describe('long-form create command', () => {
     expect(verified.signed).toBe(true);
   });
 
+  test('interactive mode fills only the missing fields for a chosen tool', async () => {
+    const { json: created } = await cliInteractive(
+      [
+        'Line one',
+        '',
+        'V',
+        '',
+        'y',
+      ],
+      'create',
+      'drop',
+      '--interactive',
+      '--name',
+      'Field Notes',
+      '--json',
+    );
+    const inspected = await cli('inspect', created.fragment, '--json');
+
+    expect(inspected.site.siteType).toBe('drop');
+    expect(inspected.site.name).toBe('Field Notes');
+    expect(created.siteData.description).toBe('Line one');
+    expect(created.siteData.tags).toEqual([{ key: 'V' }]);
+  });
+
+  test('interactive mode can prompt for the tool before collecting its fields', async () => {
+    const { json: created } = await cliInteractive(
+      [
+        'message',
+        'Alice',
+        'Status update',
+        '',
+        '',
+        '',
+        'y',
+      ],
+      'create',
+      '--interactive',
+      '--json',
+    );
+    const inspected = await cli('inspect', created.fragment, '--json');
+
+    expect(inspected.site.siteType).toBe('message');
+    expect(inspected.site.name).toBe('Alice');
+    expect(created.siteData.description).toBe('Status update');
+  });
+
+  test('interactive store mode can collect repeated item entries', async () => {
+    const seller = generateSecretMaterial();
+    const { json: created } = await cliInteractive(
+      [
+        'Freedom Market',
+        '',
+        '',
+        'Sticker Pack',
+        '7.5',
+        '',
+        '',
+        '',
+        'n',
+        '',
+        'y',
+      ],
+      'create',
+      'store',
+      '--interactive',
+      '--sign-secret',
+      seller.nsec,
+      '--json',
+    );
+
+    expect(created.siteData.pubkey).toBe(seller.nowherePubkey);
+    expect(created.siteData.items).toHaveLength(1);
+    expect(created.siteData.items[0]).toMatchObject({
+      name: 'Sticker Pack',
+      price: 7.5,
+    });
+  });
+
   test('rejects mixing JSON input with long-form builder flags', async () => {
     await withJsonFile({ name: 'Field Notes', description: 'Line one' }, async (path) => {
       const stderr = await cliFailure(
@@ -135,6 +262,21 @@ describe('long-form create command', () => {
       );
 
       expect(stderr).toContain('Choose either --input <path> or long-form builder flags, not both.');
+    });
+  });
+
+  test('rejects mixing JSON input with interactive mode', async () => {
+    await withJsonFile({ name: 'Field Notes', description: 'Line one' }, async (path) => {
+      const stderr = await cliFailure(
+        'create',
+        'drop',
+        '--input',
+        path,
+        '--interactive',
+        '--json',
+      );
+
+      expect(stderr).toContain('Choose either --input <path> or --interactive, not both.');
     });
   });
 });

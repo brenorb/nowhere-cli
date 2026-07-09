@@ -25,6 +25,7 @@ import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from '
 import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
+import { resolveInteractiveCreateInput } from './lib/create-interactive.js';
 import { resolveCreateRawInput, type CreateCommandOptions } from './lib/create-long-form.js';
 import { createMessageTipInvoice, listMessageTipMethods } from './lib/message-tips.js';
 import { printOutput } from './lib/output.js';
@@ -1229,10 +1230,12 @@ program
 
 program
   .command('create')
-  .description('Create one of the eight Nowhere site types from JSON input or long-form CLI flags.')
-  .argument('<tool>', `One of: ${toolChoices.join(', ')}`)
+  .description('Create one of the eight Nowhere site types from JSON input, long-form CLI flags, or interactive prompts.')
+  .argument('[tool]', `One of: ${toolChoices.join(', ')}`)
   .option('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
+  .option('--interactive', 'Prompt for the missing builder fields instead of requiring every value up front.')
   .option('--name <text>', 'Site name for long-form builder mode.')
+  .option('--title <text>', 'Message title for long-form builder mode.')
   .option('--description <text>', 'Site description/body for long-form builder mode.')
   .option('--description-file <path>', 'Read the site description/body from this file instead of --description.')
   .option('--image <url>', 'Site image URL for long-form builder mode.')
@@ -1250,15 +1253,23 @@ program
   .option('--use-signer', 'Use the persisted remote signer instead of --sign-secret.')
   .option('--encrypt-password <password>', 'Encrypt the final fragment after signing, matching the web flow.')
   .option('--json', 'Emit JSON output.')
-  .action(async (tool: string, options) => {
-    if (!toolChoices.includes(tool as ToolSlug)) {
-      fail(`Unsupported tool "${tool}". Expected one of: ${toolChoices.join(', ')}.`);
-    }
-
+  .action(async (tool: string | undefined, options) => {
     const signer = await resolveOptionalSigner(options.signSecret, options.useSigner, '--sign-secret');
     try {
-      const raw = await resolveCreateRawInput(tool as ToolSlug, options as CreateCommandOptions, signer);
-      const built = await buildSite(tool as ToolSlug, raw);
+      if (tool !== undefined && !toolChoices.includes(tool as ToolSlug)) {
+        fail(`Unsupported tool "${tool}". Expected one of: ${toolChoices.join(', ')}.`);
+      }
+      if (!options.interactive && tool === undefined) {
+        fail(`Pass a tool or use --interactive. Expected one of: ${toolChoices.join(', ')}.`);
+      }
+
+      const resolvedCreate = options.interactive
+        ? await resolveInteractiveCreateInput(tool, options as CreateCommandOptions, signer)
+        : {
+            tool: tool as ToolSlug,
+            raw: await resolveCreateRawInput(tool as ToolSlug, options as CreateCommandOptions, signer),
+          };
+      const built = await buildSite(resolvedCreate.tool, resolvedCreate.raw);
       const published = await finalizePublish(
         built.fragment,
         options.signSecret,
@@ -1268,8 +1279,8 @@ program
 
       printOutput(
         {
-          tool,
-          siteType: tool === 'forum' ? 'discussion' : tool,
+          tool: resolvedCreate.tool,
+          siteType: resolvedCreate.tool === 'forum' ? 'discussion' : resolvedCreate.tool,
           inputPath: options.input,
           siteData: built.siteData,
           verification: built.verification,
