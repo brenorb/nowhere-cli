@@ -276,6 +276,8 @@ describe('long-form create command', () => {
         'n',
         'events@example.com',
         'n',
+        'V',
+        '',
         'y',
       ],
       'create',
@@ -299,6 +301,7 @@ describe('long-form create command', () => {
       { key: 'q', value: '120' },
       { key: 'R', value: '18+' },
       { key: 'I', value: 'events@example.com' },
+      { key: 'V' },
     ]);
   });
 
@@ -319,7 +322,6 @@ describe('long-form create command', () => {
         'Telegram',
         '@alice',
         '',
-        'y',
       ],
       'create',
       'message',
@@ -371,6 +373,44 @@ describe('long-form create command', () => {
       name: 'Sticker Pack',
       price: 7.5,
     });
+  });
+
+  test('interactive store items expose the options from the hosted builder', async () => {
+    const seller = generateSecretMaterial();
+    const { json: created, stderr } = await cliInteractive(
+      ['', '', 'Sticker Pack', '7.5'],
+      'create',
+      'store',
+      '--interactive',
+      '--name',
+      'Freedom Market',
+      '--pubkey',
+      seller.npub,
+      '--json',
+    );
+
+    expect(stderr).toContain('Optional: digital item?');
+    expect(stderr).toContain('Optional: collect buyer email for this item');
+    expect(created.siteData.items[0]).toMatchObject({ name: 'Sticker Pack', price: 7.5 });
+  });
+
+  test('petition context does not hide the boolean full-address signer field', async () => {
+    const owner = generateSecretMaterial();
+    const { stderr } = await cliInteractive(
+      [],
+      'create',
+      'petition',
+      '--interactive',
+      '--name',
+      'Open Letter',
+      '--pubkey',
+      owner.npub,
+      '--tag',
+      'b=Additional context',
+      '--json',
+    );
+
+    expect(stderr).toContain('Optional: signer full address (off/optional/required) [off]');
   });
 
   test('store creation fails clearly when no items are provided', async () => {
