@@ -39,7 +39,7 @@ pnpm cli signer connect --bunker 'bunker://...' --json
 pnpm cli signer start --relay wss://bucket.coracle.social --json
 pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
 pnpm cli create store --input ./store.json --use-signer --json
-pnpm cli create drop --interactive --json
+pnpm cli create drop -i --json
 pnpm cli create --interactive --json
 pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
 pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
@@ -65,15 +65,18 @@ pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --jso
 
 `create <tool>` accepts the upstream codec shape directly as JSON.
 
-`create --interactive` also supports a guided prompt flow:
+`create -i` (short for `--interactive`) starts a guided prompt flow modeled on the forms at hostednowhere.com:
 
-- `create <tool> --interactive` asks only for the missing fields for that tool
-- `create --interactive` prompts for the tool first, then the missing fields
-- long-form flags like `--name`, `--description`, `--pubkey`, `--item`, `--svg`, and message `--title` prefill the interactive session instead of being asked again
+- `create <tool> -i` asks only for the missing fields for that tool
+- `create -i` prompts for the tool first, then the missing fields
+- long-form flags and matching `--tag` values prefill the session instead of being asked again
+- prompts distinguish required fields from optional builder settings and show the final payload before confirmation
 
-- Use `pubkey` as a Nowhere base64url pubkey, an `npub`, or a 64-char hex pubkey.
+- Use `pubkey` as a Nowhere base64url pubkey, an `npub`, a copied `nostr:npub`, or a 64-char hex pubkey.
 - Use tag objects like `{ "key": "V", "value": null }` for boolean tags that the web app stores without a value.
 - `update` imports an existing site, merges the patch object, then re-encodes it through the upstream codec.
+
+See [docs/long-form-builder.md](docs/long-form-builder.md) for required fields, hosted-builder options, Store item prompts, and flag/prompt precedence.
 
 ### Understanding tags
 

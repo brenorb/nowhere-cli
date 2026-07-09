@@ -108,4 +108,4 @@ The CLI already injects a few upstream-style defaults when you omit them:
 
 ## Why the website usually hides tags
 
-The website builder is a form layer on top of the same schema. When you fill a field in the UI, the app writes the matching tags for you. The CLI is intentionally lower level so AI agents and scripts can generate the exact payload directly.
+The website builder is a form layer on top of the same schema. When you fill a field in the UI, the app writes the matching tags for you. The CLI exposes those tags directly for agents and scripts, while `create -i` provides named prompts for the same builder fields.
