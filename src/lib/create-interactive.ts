@@ -15,6 +15,7 @@ import {
   toolChoices,
   validateCreatePayloadRequirements,
   type CreatePromptStep,
+  type CreateTagTextFormat,
   type ToolSlug,
 } from './create-tools.js';
 
@@ -49,6 +50,16 @@ function setTags(payload: CreatePayload, tags: CreateTag[]): void {
     return;
   }
   delete payload.tags;
+}
+
+function hasTag(payload: CreatePayload, key: string): boolean {
+  return readTags(payload).some((tag) => tag.key === key);
+}
+
+function setTag(payload: CreatePayload, key: string, value?: string): void {
+  const tags = readTags(payload).filter((tag) => tag.key !== key);
+  tags.push(value === undefined ? { key } : { key, value });
+  setTags(payload, tags);
 }
 
 function readItems(payload: CreatePayload): CreateItem[] {
@@ -148,6 +159,167 @@ async function promptMissingTags(session: PromptSession, payload: CreatePayload)
   setTags(payload, tags);
 }
 
+function parseHostedTextValue(format: CreateTagTextFormat, answer: string): string {
+  if (format === 'plain') {
+    return answer;
+  }
+  if (format === 'cents') {
+    const amount = Number(answer);
+    if (!Number.isFinite(amount) || amount < 0) {
+      fail('Enter a non-negative amount.');
+    }
+    return String(Math.round(amount * 100));
+  }
+  if (format === 'integer') {
+    if (!/^\d+$/.test(answer)) {
+      fail('Enter a non-negative whole number.');
+    }
+    return String(Number.parseInt(answer, 10));
+  }
+  if (format === 'hex-color') {
+    const color = answer.replace(/^#/, '').toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(color)) {
+      fail('Enter a six-digit hex colour such as #2563EB.');
+    }
+    return color;
+  }
+  if (format === 'base36-integer') {
+    if (!/^\d+$/.test(answer) || Number.parseInt(answer, 10) <= 0) {
+      fail('Enter a positive whole number.');
+    }
+    const value = Number.parseInt(answer, 10);
+    return value === 5000 ? '' : value.toString(36);
+  }
+  if (format === 'dot-list') {
+    return answer
+      .split(/[,.\s]+/)
+      .map((value) => value.trim().toUpperCase())
+      .filter(Boolean)
+      .join('.');
+  }
+  if (format === 'escaped-list') {
+    return answer
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.replace(/\\/g, '\\\\').replace(/\|/g, '\\p'))
+      .join('\\p');
+  }
+  if (format === 'pipe-list') {
+    return answer
+      .split(',')
+      .map((value) => value.replace(/\|/g, '').trim())
+      .filter(Boolean)
+      .join('|');
+  }
+  return answer;
+}
+
+async function promptHostedTagText(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'tag-text' }>,
+): Promise<void> {
+  if (hasTag(payload, step.tagKey) || (step.whenTagPresent && !hasTag(payload, step.whenTagPresent))) {
+    return;
+  }
+
+  if (step.format === 'datetime') {
+    const date = await promptLine(
+      session,
+      `Optional: ${step.label} date (YYYY-MM-DD) (leave blank to skip)`,
+      { allowBlank: true },
+    );
+    if (!date) {
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      fail('Enter the date as YYYY-MM-DD.');
+    }
+    const defaultTime = step.defaultTime ?? '00:00';
+    const time = await promptLine(
+      session,
+      `Optional: ${step.label} time [${defaultTime}]`,
+      { allowBlank: true },
+    ) || defaultTime;
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+      fail('Enter the time as HH:MM using a 24-hour clock.');
+    }
+    setTag(payload, step.tagKey, `${date.replace(/-/g, '')}${time.replace(':', '')}`);
+    return;
+  }
+
+  while (true) {
+    const answer = await promptLine(
+      session,
+      `Optional: ${step.label} (leave blank to skip)`,
+      { allowBlank: true },
+    );
+    if (!answer) {
+      return;
+    }
+    try {
+      const value = parseHostedTextValue(step.format ?? 'plain', answer);
+      if (value) {
+        setTag(payload, step.tagKey, value);
+      }
+      return;
+    } catch (error) {
+      output.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+}
+
+async function promptHostedTagChoice(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'tag-choice' }>,
+): Promise<void> {
+  if (hasTag(payload, step.tagKey) || (step.whenTagPresent && !hasTag(payload, step.whenTagPresent))) {
+    return;
+  }
+
+  const defaultChoice = step.choices.find((choice) => choice.value === step.defaultValue);
+  output.write(`Optional ${step.label}: ${step.choices.map((choice) => `${choice.label}=${choice.value || 'none'}`).join(', ')}\n`);
+  while (true) {
+    const answer = await promptLine(
+      session,
+      `Optional: ${step.label}${defaultChoice ? ` [${defaultChoice.label}]` : ''}`,
+      { allowBlank: true },
+    );
+    if (!answer) {
+      return;
+    }
+    const normalized = answer.toLowerCase();
+    const choice = step.choices.find((candidate) => (
+      candidate.value.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized
+    ));
+    if (!choice) {
+      output.write(`Choose one of: ${step.choices.map((candidate) => candidate.value || candidate.label).join(', ')}\n`);
+      continue;
+    }
+    if (choice.value !== step.defaultValue && choice.value) {
+      setTag(payload, step.tagKey, choice.value);
+    }
+    return;
+  }
+}
+
+async function promptHostedTagBoolean(
+  session: PromptSession,
+  payload: CreatePayload,
+  step: Extract<CreatePromptStep, { kind: 'tag-boolean' }>,
+): Promise<void> {
+  if (hasTag(payload, step.tagKey) || (step.whenTagPresent && !hasTag(payload, step.whenTagPresent))) {
+    return;
+  }
+
+  const enabled = await promptYesNo(session, `Optional: ${step.label}?`, step.defaultValue);
+  if (enabled === step.valueWhenPresent) {
+    setTag(payload, step.tagKey);
+  }
+}
+
 async function promptStoreItems(session: PromptSession, payload: CreatePayload): Promise<void> {
   if (readItems(payload).length > 0) {
     return;
@@ -215,6 +387,18 @@ async function promptStep(session: PromptSession, payload: CreatePayload, step: 
   }
   if (step.kind === 'items') {
     await promptStoreItems(session, payload);
+    return;
+  }
+  if (step.kind === 'tag-text') {
+    await promptHostedTagText(session, payload, step);
+    return;
+  }
+  if (step.kind === 'tag-choice') {
+    await promptHostedTagChoice(session, payload, step);
+    return;
+  }
+  if (step.kind === 'tag-boolean') {
+    await promptHostedTagBoolean(session, payload, step);
     return;
   }
   await promptMissingTags(session, payload);
