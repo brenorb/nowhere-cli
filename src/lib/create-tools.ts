@@ -152,7 +152,7 @@ const createToolDefinitions: Record<ToolSlug, CreateToolDefinition> = {
     supportsSvgField: false,
     requiresOwnerPubkey: false,
     promptSteps: [
-      { kind: 'text', key: 'name', label: 'message name', required: false },
+      { kind: 'text', key: 'name', label: 'author name', required: true },
       { kind: 'message-content' },
       { kind: 'text', key: 'image', label: 'image URL', required: false },
       { kind: 'text', key: 'pubkey', label: 'author pubkey', required: false },

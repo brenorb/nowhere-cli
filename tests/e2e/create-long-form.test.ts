@@ -135,6 +135,18 @@ describe('long-form create command', () => {
     expect(created.siteData.tags).toEqual([{ key: 't', value: 'Dispatch' }]);
   });
 
+  test('message creation requires the author name used by the hosted builder', async () => {
+    const stderr = await cliFailure(
+      'create',
+      'message',
+      '--title',
+      'Dispatch',
+      '--json',
+    );
+
+    expect(stderr).toContain('Author name is required for message creation.');
+  });
+
   test('preserves store items and infers the owner pubkey from the signing secret', async () => {
     const seller = generateSecretMaterial();
 
