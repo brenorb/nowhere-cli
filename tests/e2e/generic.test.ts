@@ -7,8 +7,9 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
+const cliArgs = ['--import', 'tsx', 'src/cli.ts'];
 const cli = async (...args: string[]) => {
-  const result = await execFileAsync('pnpm', ['tsx', 'src/cli.ts', ...args], {
+  const result = await execFileAsync(process.execPath, [...cliArgs, ...args], {
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
   });
   return JSON.parse(result.stdout);

@@ -6,7 +6,9 @@ import { readJsonInput } from './io.js';
 
 export interface CreateCommandOptions {
   input?: string;
+  interactive?: boolean;
   name?: string;
+  title?: string;
   description?: string;
   descriptionFile?: string;
   image?: string;
@@ -40,7 +42,7 @@ function requireObject(value: unknown, message: string): Record<string, unknown>
   return value as Record<string, unknown>;
 }
 
-function parseTagSpec(spec: string): { key: string; value?: string } {
+export function parseTagSpec(spec: string): { key: string; value?: string } {
   const trimmed = spec.trim();
   if (!trimmed) {
     fail('Tag specs cannot be empty.');
@@ -102,7 +104,7 @@ function splitEscapedSegments(value: string, delimiter: string): string[] {
   return segments;
 }
 
-function parseStoreItemSpec(spec: string): Record<string, unknown> {
+export function parseStoreItemSpec(spec: string): Record<string, unknown> {
   const item: Record<string, unknown> = {};
   const tags: Array<{ key: string; value?: string }> = [];
 
@@ -158,9 +160,10 @@ function parseStoreItemSpec(spec: string): Record<string, unknown> {
   return item;
 }
 
-function hasLongFormCreateOptions(options: CreateCommandOptions): boolean {
+export function hasLongFormCreateOptions(options: CreateCommandOptions): boolean {
   return (
     options.name !== undefined
+    || options.title !== undefined
     || options.description !== undefined
     || options.descriptionFile !== undefined
     || options.image !== undefined
@@ -172,22 +175,51 @@ function hasLongFormCreateOptions(options: CreateCommandOptions): boolean {
   );
 }
 
-function toolRequiresOwnerPubkey(tool: ToolSlug): boolean {
+export function toolRequiresOwnerPubkey(tool: ToolSlug): boolean {
   return tool === 'store' || tool === 'petition' || tool === 'forum';
 }
 
-export async function resolveCreateRawInput(
-  tool: ToolSlug,
+function upsertMessageTitleTag(payload: Record<string, unknown>, title: string): void {
+  const existingTags = Array.isArray(payload.tags) ? payload.tags as Array<{ key?: unknown; value?: unknown }> : [];
+  if (existingTags.some((tag) => tag.key === 't' && typeof tag.value === 'string' && tag.value.trim())) {
+    fail('Choose either --title or a "t" tag, not both.');
+  }
+
+  payload.tags = [{ key: 't', value: title }, ...existingTags];
+}
+
+function validateToolSpecificFlags(tool: ToolSlug | undefined, options: CreateCommandOptions): void {
+  if (!tool) {
+    return;
+  }
+
+  if (tool !== 'store' && options.item && options.item.length > 0) {
+    fail('--item is only supported for store creation.');
+  }
+  if (tool !== 'art' && (options.svg !== undefined || options.svgFile !== undefined)) {
+    fail('--svg and --svg-file are only supported for art creation.');
+  }
+  if (tool !== 'message' && options.title !== undefined) {
+    fail('--title is only supported for message creation.');
+  }
+}
+
+export function validateCreateCommandOptions(
+  tool: ToolSlug | undefined,
   options: CreateCommandOptions,
-  signer: CliSigner | undefined,
-): Promise<unknown> {
+  mode: 'interactive' | 'non-interactive',
+): void {
   const usingInput = typeof options.input === 'string';
   const usingLongForm = hasLongFormCreateOptions(options);
+  const usingInteractive = options.interactive === true;
 
   if (usingInput && usingLongForm) {
     fail('Choose either --input <path> or long-form builder flags, not both.');
   }
-  if (!usingInput && !usingLongForm) {
+  if (usingInput && usingInteractive) {
+    fail('Choose either --input <path> or --interactive, not both.');
+  }
+  if (mode === 'non-interactive' && !usingInput && !usingLongForm) {
     fail('Pass --input <path> or provide long-form builder flags like --name, --tag, and --item.');
   }
   if (options.description !== undefined && options.descriptionFile !== undefined) {
@@ -196,30 +228,27 @@ export async function resolveCreateRawInput(
   if (options.svg !== undefined && options.svgFile !== undefined) {
     fail('Choose either --svg or --svg-file, not both.');
   }
-  if (tool !== 'store' && options.item && options.item.length > 0) {
-    fail('--item is only supported for store creation.');
-  }
-  if (tool !== 'art' && (options.svg !== undefined || options.svgFile !== undefined)) {
-    fail('--svg and --svg-file are only supported for art creation.');
-  }
+  validateToolSpecificFlags(tool, options);
+}
 
-  const raw = usingInput
-    ? await readJsonInput(options.input as string)
-    : (() => {
-        const payload: Record<string, unknown> = {};
-        if (options.name !== undefined) {
-          payload.name = options.name;
-        }
-        if (options.image !== undefined) {
-          payload.image = options.image;
-        }
-        if (options.pubkey !== undefined) {
-          payload.pubkey = options.pubkey;
-        }
-        return payload;
-      })();
+export async function buildCreatePayloadFromOptions(
+  tool: ToolSlug,
+  options: CreateCommandOptions,
+  signer: CliSigner | undefined,
+): Promise<Record<string, unknown>> {
+  validateToolSpecificFlags(tool, options);
 
-  const payload = requireObject(raw, 'Expected create input to be a JSON object or long-form builder fields.');
+  const payload: Record<string, unknown> = {};
+
+  if (options.name !== undefined) {
+    payload.name = options.name;
+  }
+  if (options.image !== undefined) {
+    payload.image = options.image;
+  }
+  if (options.pubkey !== undefined) {
+    payload.pubkey = options.pubkey;
+  }
 
   if (options.description !== undefined) {
     payload.description = options.description;
@@ -236,6 +265,9 @@ export async function resolveCreateRawInput(
   if (options.tag && options.tag.length > 0) {
     payload.tags = options.tag.map((spec) => parseTagSpec(spec));
   }
+  if (options.title !== undefined) {
+    upsertMessageTitleTag(payload, options.title);
+  }
 
   if (options.item && options.item.length > 0) {
     payload.items = options.item.map((spec) => parseStoreItemSpec(spec));
@@ -250,4 +282,21 @@ export async function resolveCreateRawInput(
   }
 
   return payload;
+}
+
+export async function resolveCreateRawInput(
+  tool: ToolSlug,
+  options: CreateCommandOptions,
+  signer: CliSigner | undefined,
+): Promise<unknown> {
+  validateCreateCommandOptions(tool, options, 'non-interactive');
+
+  if (typeof options.input === 'string') {
+    return requireObject(
+      await readJsonInput(options.input),
+      'Expected create input to be a JSON object or long-form builder fields.',
+    );
+  }
+
+  return buildCreatePayloadFromOptions(tool, options, signer);
 }
