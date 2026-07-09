@@ -41,6 +41,10 @@ function splitUnescaped(value: string, delimiter: string): string[] {
   return parts;
 }
 
+function escapeField(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/,/g, '\\,').replace(/:/g, '\\:');
+}
+
 export function parseTipMethods(raw: string): TipMethod[] {
   if (!raw) {
     return [];
@@ -76,4 +80,15 @@ export function parseTipMethods(raw: string): TipMethod[] {
         value: unescapeField(entry),
       };
     });
+}
+
+export function serializeTipMethods(methods: TipMethod[]): string {
+  return methods
+    .map((method) => {
+      if (method.type === 'custom') {
+        return `*${method.showQr ? '!' : ''}${escapeField(method.label)}:${escapeField(method.value)}`;
+      }
+      return escapeField(method.value);
+    })
+    .join(',');
 }
