@@ -25,6 +25,7 @@ describe('hosted builder structured tag values', () => {
   test('round-trips custom store payment methods with escaped delimiters', () => {
     const methods = [
       { label: 'Bank, local', currency: 'BRL', address: 'agency:123\\4', showQr: true },
+      { label: 'Literal \\code', currency: 'USD', address: 'account\\owner', showQr: false },
     ];
 
     expect(parseCustomPayments(serializeCustomPayments(methods))).toEqual(methods);
