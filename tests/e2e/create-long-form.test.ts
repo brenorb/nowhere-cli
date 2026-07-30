@@ -59,6 +59,32 @@ async function cliInteractive(answers: string[], ...args: string[]) {
   };
 }
 
+async function cliInteractiveFailure(answers: string[], ...args: string[]) {
+  const child = spawn('node', [...cliArgs, ...args], { cwd });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+
+  child.stdin.write(answers.join('\n'));
+  child.stdin.end();
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('Interactive CLI did not terminate after stdin EOF.'));
+    }, 2_000);
+    child.on('error', reject);
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      resolve(code ?? 1);
+    });
+  });
+
+  return { exitCode, stderr };
+}
+
 async function withJsonFile(payload: unknown, fn: (path: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'nowhere-cli-'));
   const file = join(dir, 'input.json');
@@ -82,6 +108,13 @@ async function withTextFile(name: string, content: string, fn: (path: string) =>
 }
 
 describe('long-form create command', () => {
+  test('interactive mode fails clearly when scripted stdin ends before required fields', async () => {
+    const result = await cliInteractiveFailure([], 'create', 'drop', '--interactive', '--json');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Interactive input ended before all answers were supplied.');
+  });
+
   test('builds a drop from explicit flags without a JSON file', async () => {
     const created = await cli(
       'create',

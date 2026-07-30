@@ -6,13 +6,28 @@ export type PromptSession = {
   close(): void;
 };
 
+class PromptInputEndedError extends Error {
+  constructor() {
+    super('Interactive input ended before all answers were supplied.');
+    this.name = 'PromptInputEndedError';
+  }
+}
+
 export async function promptLine(
   session: PromptSession,
   label: string,
   options: { required?: boolean; allowBlank?: boolean } = {},
 ): Promise<string> {
   while (true) {
-    const answer = (await session.question(`${label}: `)).trim();
+    let answer: string;
+    try {
+      answer = (await session.question(`${label}: `)).trim();
+    } catch (error) {
+      if (error instanceof PromptInputEndedError && !options.required) {
+        return '';
+      }
+      throw error;
+    }
     if (answer || options.allowBlank) {
       return answer;
     }
@@ -31,7 +46,15 @@ export async function promptYesNo(
   const suffix = defaultValue ? '[Y/n]' : '[y/N]';
 
   while (true) {
-    const answer = (await session.question(`${label} ${suffix}: `)).trim().toLowerCase();
+    let answer: string;
+    try {
+      answer = (await session.question(`${label} ${suffix}: `)).trim().toLowerCase();
+    } catch (error) {
+      if (error instanceof PromptInputEndedError) {
+        return defaultValue;
+      }
+      throw error;
+    }
     if (!answer) {
       return defaultValue;
     }
@@ -63,11 +86,17 @@ export async function createPromptSession(): Promise<PromptSession> {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   const scriptedAnswers = Buffer.concat(chunks).toString('utf8').split(/\r?\n/);
+  let answerIndex = 0;
 
   return {
     async question(prompt: string) {
       output.write(prompt);
-      return scriptedAnswers.shift() ?? '';
+      if (answerIndex >= scriptedAnswers.length) {
+        throw new PromptInputEndedError();
+      }
+      const answer = scriptedAnswers[answerIndex];
+      answerIndex += 1;
+      return answer;
     },
     close() {},
   };
