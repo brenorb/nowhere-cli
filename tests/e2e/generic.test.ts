@@ -9,18 +9,29 @@ import { generateSecretMaterial } from '../../src/lib/keys.js';
 
 const execFileAsync = promisify(execFile);
 const packageManifest = createRequire(import.meta.url)('../../package.json') as { version: string };
+const cwd = fileURLToPath(new URL('../..', import.meta.url));
 const cliArgs = ['--import', 'tsx', 'src/cli.ts'];
 const cli = async (...args: string[]) => {
   const result = await execFileAsync(process.execPath, [...cliArgs, ...args], {
-    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+    cwd,
   });
   return JSON.parse(result.stdout);
 };
 const cliText = async (...args: string[]) => {
   const result = await execFileAsync(process.execPath, [...cliArgs, ...args], {
-    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+    cwd,
   });
   return result.stdout.trim();
+};
+const cliFailure = async (...args: string[]) => {
+  try {
+    await execFileAsync(process.execPath, [...cliArgs, ...args], { cwd });
+    throw new Error('Expected the CLI command to fail.');
+  } catch (error) {
+    return error instanceof Error && 'stderr' in error
+      ? String((error as { stderr?: string }).stderr ?? '')
+      : '';
+  }
 };
 
 function sampleMessage(nowherePubkey: string): MessageData {
@@ -104,6 +115,28 @@ describe('generic CLI commands', () => {
     const output = await cliText('--version');
 
     expect(output).toBe(packageManifest.version);
+  });
+
+  test('invoice commands reject fractional sats instead of truncating them', async () => {
+    const material = generateSecretMaterial();
+    const fragment = encodeMessage({
+      ...sampleMessage(material.nowherePubkey),
+      tags: [{ key: 'l', value: 'tips@seller.test,*PayPal:paypal.me/alice' }],
+    }).fragment;
+
+    const stderr = await cliFailure(
+      'message',
+      'tip',
+      'invoice',
+      fragment,
+      '--method',
+      'custom_0',
+      '--sats',
+      '5.5',
+      '--json',
+    );
+
+    expect(stderr).toContain('Tip amount must be a positive integer number of sats.');
   });
 });
 

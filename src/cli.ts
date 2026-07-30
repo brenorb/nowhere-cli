@@ -1997,7 +1997,7 @@ fundraiserDonate
       await createFundraiserDonationInvoice({
         fundraiserInput: fundraiser.url,
         methodId: options.method,
-        sats: Number.parseInt(options.sats, 10),
+        sats: Number(options.sats),
       }),
       Boolean(options.json),
     );
@@ -2033,7 +2033,7 @@ messageTip
       await createMessageTipInvoice({
         messageInput: message.url,
         methodId: options.method,
-        sats: Number.parseInt(options.sats, 10),
+        sats: Number(options.sats),
       }),
       Boolean(options.json),
     );
