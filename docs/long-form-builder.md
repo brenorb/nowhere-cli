@@ -19,6 +19,7 @@ Behavior:
 - A matching `--tag KEY=VALUE` also skips the corresponding Hosted Nowhere field prompt.
 - Prompts label required and optional fields and show the complete payload before confirmation and encoding.
 - Extra top-level and Store-item tags remain available after the named builder fields.
+- In scripted/non-TTY mode, end-of-input is safe: missing optional answers use their documented defaults, while a missing required answer exits with `Interactive input ended before all answers were supplied.` instead of retrying forever.
 
 Interactive mode is intentionally separate from `--input <path>`.
 
