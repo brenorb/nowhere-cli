@@ -105,6 +105,12 @@ function printTextOutput(value: string): void {
   process.stdout.write(`${value}\n`);
 }
 
+function validateOutputOptions(options: { csv?: boolean; json?: boolean }): void {
+  if (options.csv && options.json) {
+    fail('Choose either --csv or --json, not both.');
+  }
+}
+
 const DEFAULT_WATCH_POLL_MS = 250;
 
 function addWatchOptions<T extends Command>(command: T): T {
@@ -1464,6 +1470,7 @@ store
   .option('--csv', 'Emit CSV output.')
   .option('--json', 'Emit JSON output.')
   .action(async (storeInput, options) => {
+    validateOutputOptions(options);
     const requestedOrderIds = getRelayList(options.orderId);
     const store = await resolveRuntimeSiteInput(storeInput, 'store', options.password);
     const signer = await resolveOptionalSigner(options.secret, options.useSigner);
@@ -1872,6 +1879,7 @@ petition
   .option('--pow-difficulty <bits>', 'Override the proof-of-work difficulty.', '20')
   .option('--json', 'Emit JSON output.')
   .action(async (petitionInput, options) => {
+    validateOutputOptions(options);
     const petition = await resolveRuntimeSiteInput(petitionInput, 'petition', options.password);
     if (!petition.siteData.pubkey) {
       fail('Petition is missing an owner pubkey.');

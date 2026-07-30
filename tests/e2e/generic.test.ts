@@ -138,6 +138,12 @@ describe('generic CLI commands', () => {
 
     expect(stderr).toContain('Tip amount must be a positive integer number of sats.');
   });
+
+  test('CSV and JSON output modes cannot be selected together', async () => {
+    const stderr = await cliFailure('store', 'orders', 'not-a-store', '--csv', '--json');
+
+    expect(stderr).toContain('Choose either --csv or --json, not both.');
+  });
 });
 
 function fragmentToUrl(fragment: string): string {
