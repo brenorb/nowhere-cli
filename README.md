@@ -20,6 +20,8 @@ Current scope in this first slice:
 
 Commands currently optimized for agent use expose `--json` output.
 
+The canonical feature/user-story audit is tracked in [docs/nowhere-cli-feature-tracker.xlsx](docs/nowhere-cli-feature-tracker.xlsx), including expected behavior, source evidence, baseline failures, fixes, and post-fix evidence.
+
 ## Install
 
 Requires Node.js 20 or newer.
