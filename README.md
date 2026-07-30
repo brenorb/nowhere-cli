@@ -149,6 +149,8 @@ Encrypted fragments are accepted as normal positional arguments even when the ba
 
 `store orders` now also accepts `--csv` for the same export-style workflow the manage dashboard exposes.
 
+`store orders` and `petition signatures` require exactly one output mode when an explicit format is requested: use either `--csv` or `--json`, not both. This prevents a script from silently receiving CSV when it expected JSON.
+
 Anonymous forum posts, replies, torrent submissions, room flows, and general chat now reuse one persisted forum session secret under `XDG_CONFIG_HOME/nowhere-cli/forum-session.json` by default, which matches the website's stable in-session anonymous identity behavior. Set `NOWHERE_FORUM_SESSION_SECRET` or pass `--session-secret` where supported to override that identity explicitly.
 
 `forum chat send` accepts `--session-secret` to override the advertised stable session pubkey that the website uses for private chat routing. Without it, the CLI advertises the persisted forum session automatically. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for either the persisted session or an explicit `--session-secret`.
