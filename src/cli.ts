@@ -356,7 +356,12 @@ async function resolveRuntimeSiteInput<TExpected extends 'store' | 'petition' | 
     fail(`Expected a Nowhere ${label} URL or fragment.`);
   }
 
-  const fragment = resolved.unsignedFragment ?? resolved.decodedFragment;
+  // Forum event keys are derived from the renderer's active fragment. The
+  // hosted renderer currently keeps a valid signed fragment intact, while
+  // other live tools address the underlying unsigned site data.
+  const fragment = expectedType === 'discussion'
+    ? resolved.decodedFragment
+    : resolved.unsignedFragment ?? resolved.decodedFragment;
   if (!fragment) {
     fail(`Could not resolve the ${label} fragment.`);
   }

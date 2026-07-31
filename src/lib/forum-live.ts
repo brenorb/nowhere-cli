@@ -507,7 +507,11 @@ function resolveForumFragment(input: string): { fragment: string; data: ForumDat
       throw new Error('Expected a forum URL or fragment.');
     }
     return {
-      fragment: unsignedFragment,
+      // The hosted renderer keeps the complete URL fragment as the forum
+      // namespace when its decoder accepts a signed fragment directly. Keep
+      // that behavior even when the local codec needs the 64-byte signature
+      // stripped before it can decode the forum data.
+      fragment,
       data: decoded as ForumData,
     };
   }

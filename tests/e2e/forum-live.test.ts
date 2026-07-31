@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { encodeForum, type ForumData } from '@nowhere/codec';
+import { bytesToBase64url, encodeForum, type ForumData } from '@nowhere/codec';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { finalizeEvent } from 'nostr-tools/pure';
 import { generateSecretMaterial } from '../../src/lib/keys.js';
 import { startMockRelay, type MockRelayHandle } from '../support/mockRelay.js';
 import {
@@ -67,6 +68,18 @@ function makeForum(pubkey: string, tags: ForumData['tags'] = defaultForumTags())
   return encodeForum(data).fragment;
 }
 
+function signForumFragment(fragment: string, secretKey: Uint8Array): string {
+  const event = finalizeEvent({
+    kind: 22242,
+    created_at: 0,
+    tags: [],
+    content: fragment,
+  }, secretKey);
+  const fragmentBytes = Buffer.from(fragment.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const signatureBytes = Buffer.from(event.sig, 'hex');
+  return bytesToBase64url(new Uint8Array([...fragmentBytes, ...signatureBytes]));
+}
+
 function deriveExpectedReplyTag(text: string, authorPubkey: string, timestamp: number): string {
   return bytesToHex(sha256(new Uint8Array([
     ...encoder.encode(text),
@@ -119,6 +132,30 @@ describe('forum runtime module', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]?.payload.t).toBe('Checkpoint');
     expect(posts[0]?.topic).toBe('Ops');
+  });
+
+  test('matches the hosted renderer namespace for signed forum fragments', async () => {
+    relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+    const unsignedFragment = makeForum(owner.nowherePubkey);
+    const signedFragment = signForumFragment(unsignedFragment, owner.secretKey);
+
+    expect(getTopicTagMap(signedFragment)).not.toEqual(getTopicTagMap(unsignedFragment));
+
+    await publishForumPostFromInput({
+      forumInput: signedFragment,
+      title: 'Signed forum thread',
+      body: 'Published in the namespace used by the hosted renderer',
+      secret: owner.nsec,
+      relays: [relay.url],
+    });
+
+    const signedPosts = await listForumPosts({ forumInput: signedFragment, relays: [relay.url] });
+    const unsignedPosts = await listForumPosts({ forumInput: unsignedFragment, relays: [relay.url] });
+
+    expect(signedPosts).toHaveLength(1);
+    expect(signedPosts[0]?.payload.t).toBe('Signed forum thread');
+    expect(unsignedPosts).toHaveLength(0);
   });
 
   test('isolates salted forum posts from the unsalted forum namespace', async () => {

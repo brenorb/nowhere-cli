@@ -1935,6 +1935,74 @@ describe('relay-backed CLI commands', () => {
     }
   });
 
+  test('forum commands preserve the hosted renderer namespace for signed URLs', { timeout: 30000 }, async () => {
+    const relay = await startMockRelay();
+    const owner = generateSecretMaterial();
+
+    try {
+      await withJsonFile(
+        {
+          pubkey: owner.npub,
+          name: 'Signed Forum',
+          tags: [{ key: '1', value: relay.url }],
+        },
+        async (forumPath) => {
+          const forum = await cli(
+            'create',
+            'forum',
+            '--input',
+            forumPath,
+            '--sign-secret',
+            owner.nsec,
+            '--json',
+          );
+
+          await withJsonFile(
+            { title: 'Signed namespace post' },
+            async (postPath) => {
+              await cli(
+                'forum',
+                'post',
+                forum.signedFragment,
+                '--input',
+                postPath,
+                '--secret',
+                owner.nsec,
+                '--relay',
+                relay.url,
+                '--json',
+              );
+            },
+          );
+
+          const signed = await cli(
+            'forum',
+            'posts',
+            forum.signedFragment,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+          const unsigned = await cli(
+            'forum',
+            'posts',
+            forum.unsignedFragment,
+            '--relay',
+            relay.url,
+            '--json',
+          );
+
+          expect(signed.posts).toHaveLength(1);
+          expect(signed.posts[0]?.payload.t).toBe('Signed namespace post');
+          expect(unsigned.posts).toHaveLength(0);
+        },
+      );
+    } finally {
+      destroyPool();
+      await relay.close();
+    }
+  });
+
   test('forum browse commands support search, filters, and alternate sort modes for posts and torrents', { timeout: 30000 }, async () => {
     const relay = await startMockRelay();
     const owner = generateSecretMaterial();
