@@ -20,7 +20,10 @@ describe('npm release manifest', () => {
     const manifest = await readManifest();
 
     expect(manifest.private).toBe(false);
-    expect(manifest.bin).toEqual({ nowhere: 'dist/cli.js' });
+    expect(manifest.bin).toEqual({
+      nowhere: 'dist/cli.js',
+      'nowhere-cli': 'dist/cli.js',
+    });
     expect(manifest.files).toContain('dist');
     expect(manifest.license).toBe('AGPL-3.0-only');
     expect(manifest.publishConfig?.access).toBe('public');

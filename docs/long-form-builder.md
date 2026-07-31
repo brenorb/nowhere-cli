@@ -143,4 +143,5 @@ Interactive mode is a prompt layer, not a second create implementation. It reuse
 - Use either `--svg` or `--svg-file`, not both.
 - `--item` only works with `create store`.
 - `--title` only works with `create message`.
+- `create message <content>` is shorthand for `create message --description <content>`.
 - `--svg` and `--svg-file` only work with `create art`.

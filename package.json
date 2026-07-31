@@ -1,6 +1,6 @@
 {
   "name": "nowhere-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "CLI for creating, signing, encrypting, and managing Nowhere sites.",
   "private": false,
   "type": "module",
@@ -11,7 +11,8 @@
     "LICENSE"
   ],
   "bin": {
-    "nowhere": "dist/cli.js"
+    "nowhere": "dist/cli.js",
+    "nowhere-cli": "dist/cli.js"
   },
   "engines": {
     "node": ">=20"

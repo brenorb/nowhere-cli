@@ -31,10 +31,13 @@ npm install --global nowhere-cli
 nowhere --version
 ```
 
-The npm package is named `nowhere-cli`; the installed executable is named `nowhere`. For a one-off run without a global install, use:
+The npm package is named `nowhere-cli`; the installed executables are `nowhere` and the explicit-package alias `nowhere-cli`. For a one-off run without a global install, use:
 
 ```bash
-npx nowhere-cli --help
+npx nowhere-cli create message "sample message" --name Alice
+
+# The explicit package form uses the matching executable alias:
+npx --package=nowhere-cli -- nowhere-cli --help
 ```
 
 The unscoped npm package named `nowhere` is an unrelated project and is not maintained by this repository.
