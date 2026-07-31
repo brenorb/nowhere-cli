@@ -1,6 +1,6 @@
 {
   "name": "nowhere-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI for creating, signing, encrypting, and managing Nowhere sites.",
   "private": false,
   "type": "module",
