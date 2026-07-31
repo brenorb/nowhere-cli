@@ -169,6 +169,20 @@ describe('long-form create command', () => {
     expect(created.siteData.tags).toEqual([{ key: 't', value: 'Dispatch' }]);
   });
 
+  test('supports positional message content', async () => {
+    const created = await cli(
+      'create',
+      'message',
+      'sample message',
+      '--name',
+      'Alice',
+      '--json',
+    );
+
+    expect(created.siteData.name).toBe('Alice');
+    expect(created.siteData.description).toBe('sample message');
+  });
+
   test('message creation requires the author name used by the hosted builder', async () => {
     const stderr = await cliFailure(
       'create',

@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-07-31
+
+### Added
+
+- Added the `nowhere-cli` executable alias so explicit `npx --package=nowhere-cli -- nowhere-cli ...` invocations work.
+- Added positional message content for `create message`, alongside the existing `--description` flag.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
@@ -46,5 +53,6 @@ First public npm release.
 - Preserved escaped delimiters and literal backslashes in contacts, tips, and custom payment methods.
 - Enforced Hosted Nowhere's required author and owner fields with clearer validation errors.
 
+[0.3.1]: https://github.com/brenorb/nowhere-cli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/brenorb/nowhere-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/brenorb/nowhere-cli/releases/tag/v0.2.0

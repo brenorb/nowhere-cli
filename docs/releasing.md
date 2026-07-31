@@ -2,12 +2,12 @@
 
 ## Package identity
 
-This repository publishes the npm package `nowhere-cli`. Its `bin` entry installs an executable named `nowhere`.
+This repository publishes the npm package `nowhere-cli`. Its `bin` entries install `nowhere` and `nowhere-cli`, both backed by `dist/cli.js`; `nowhere` remains the primary short command.
 
 | Purpose | Command or name |
 | --- | --- |
 | npm package | `nowhere-cli` |
-| Installed executable | `nowhere` |
+| Installed executable | `nowhere` or `nowhere-cli` |
 | One-off npm execution | `npx nowhere-cli --help` |
 | Global installation | `npm install --global nowhere-cli` |
 

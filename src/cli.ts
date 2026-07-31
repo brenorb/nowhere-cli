@@ -1236,6 +1236,7 @@ program
   .command('create')
   .description('Create one of the eight Nowhere site types from JSON input, long-form CLI flags, or interactive prompts.')
   .argument('[tool]', `One of: ${toolChoices.join(', ')}`)
+  .argument('[content]', 'Message body shortcut for create message.')
   .option('--input <path>', 'Path to JSON input, or "-" to read JSON from stdin.')
   .option('-i, --interactive', 'Prompt for the missing builder fields instead of requiring every value up front.')
   .option('--name <text>', 'Site name for long-form builder mode.')
@@ -1257,8 +1258,15 @@ program
   .option('--use-signer', 'Use the persisted remote signer instead of --sign-secret.')
   .option('--encrypt-password <password>', 'Encrypt the final fragment after signing, matching the web flow.')
   .option('--json', 'Emit JSON output.')
-  .action(async (tool: string | undefined, options) => {
-    const signer = await resolveOptionalSigner(options.signSecret, options.useSigner, '--sign-secret');
+  .action(async (tool: string | undefined, content: string | undefined, options) => {
+    if (content !== undefined && tool !== 'message') {
+      fail('The positional content argument is only supported for message creation.');
+    }
+    if (content !== undefined && (options.description !== undefined || options.descriptionFile !== undefined)) {
+      fail('Choose either positional message content or --description/--description-file, not both.');
+    }
+    const createOptions = content === undefined ? options : { ...options, description: content };
+    const signer = await resolveOptionalSigner(createOptions.signSecret, createOptions.useSigner, '--sign-secret');
     try {
       if (tool !== undefined && !toolChoices.includes(tool as ToolSlug)) {
         fail(`Unsupported tool "${tool}". Expected one of: ${toolChoices.join(', ')}.`);
@@ -1268,17 +1276,17 @@ program
       }
 
       const resolvedCreate = options.interactive
-        ? await resolveInteractiveCreateInput(tool, options as CreateCommandOptions, signer)
+        ? await resolveInteractiveCreateInput(tool, createOptions as CreateCommandOptions, signer)
         : {
             tool: tool as ToolSlug,
-            raw: await resolveCreateRawInput(tool as ToolSlug, options as CreateCommandOptions, signer),
+            raw: await resolveCreateRawInput(tool as ToolSlug, createOptions as CreateCommandOptions, signer),
           };
       const built = await buildSite(resolvedCreate.tool, resolvedCreate.raw);
       const published = await finalizePublish(
         built.fragment,
-        options.signSecret,
+        createOptions.signSecret,
         signer,
-        options.encryptPassword,
+        createOptions.encryptPassword,
       );
 
       printOutput(
@@ -1290,7 +1298,7 @@ program
           verification: built.verification,
           ...published,
         },
-        Boolean(options.json),
+        Boolean(createOptions.json),
       );
     } finally {
       await closeSignerQuietly(signer);
