@@ -39,7 +39,8 @@ jobs:
       - run: pnpm check
       - name: Verify installed package
         run: |
-          package_file="$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --quiet)"
-          npm install --ignore-scripts --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP/$package_file"
+          package_dir="$(mktemp -d "$RUNNER_TEMP/package-smoke.XXXXXX")"
+          npm pack --ignore-scripts --pack-destination "$package_dir"
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/installed" "$package_dir"/*.tgz
           "$RUNNER_TEMP/installed/node_modules/.bin/nowhere" --version
           "$RUNNER_TEMP/installed/node_modules/.bin/nowhere" --help
