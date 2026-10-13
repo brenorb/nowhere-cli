@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: nowhere-cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: nowhere-cli
+      - name: Check out the pinned reference codec
+        uses: actions/checkout@v4
+        with:
+          repository: brenorb/nowhere
+          ref: 01afb378acfcdb6250cac366aef22aec8adf5802
+          path: source-nowhere
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: nowhere-cli/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Verify installed package
+        run: |
+          package_dir="$(mktemp -d "$RUNNER_TEMP/package-smoke.XXXXXX")"
+          npm pack --ignore-scripts --pack-destination "$package_dir"
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/installed" "$package_dir"/*.tgz
+          "$RUNNER_TEMP/installed/node_modules/.bin/nowhere" --version
+          "$RUNNER_TEMP/installed/node_modules/.bin/nowhere" --help
