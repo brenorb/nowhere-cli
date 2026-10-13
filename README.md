@@ -42,9 +42,10 @@ The unscoped npm package named `nowhere` is an unrelated project and is not main
 ## Development
 
 ```bash
-pnpm install
-pnpm test
-pnpm build
+git clone https://github.com/brenorb/nowhere.git ../source-nowhere
+git -C ../source-nowhere checkout 01afb378acfcdb6250cac366aef22aec8adf5802
+pnpm install --frozen-lockfile
+pnpm check
 ```
 
 Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package identity, tarball verification, versioning, tags, and GitHub Releases.
@@ -170,3 +171,9 @@ The forum list surfaces also support CLI-native follow mode: pass `--watch` to k
 `fundraiser donate methods` exposes the parsed donation handles from the fundraiser's `l` tag, and `fundraiser donate invoice` can turn the Lightning handle into a live invoice for a sats amount.
 
 `message tip methods` exposes the parsed tip handles from the message's `l` tag, and `message tip invoice` can turn the Lightning handle into a live invoice for a sats amount.
+
+CI checks out the reference codec at that fixed revision, then runs lint, type
+checks, all tests, and the production build. It also installs the packed CLI in a
+clean directory. These gates run on PRs, main and version tags. Manual npm
+publication keeps the same check in `prepublishOnly`; tagging does not publish
+to npm.
