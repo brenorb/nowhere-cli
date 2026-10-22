@@ -1,10 +1,11 @@
+import { fetchWithTimeout } from './network.js';
 import { writePrivateFile } from './private-files.js';
 import { readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { nip19 } from 'nostr-tools';
-import { parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
+import { parseBunkerInput, useFetchImplementation, type BunkerPointer } from 'nostr-tools/nip46';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { parseSecretKeyInput } from './keys.js';
@@ -264,6 +265,7 @@ export async function connectSignerViaBunker(input: string, options?: {
     throw new Error('Enter a bunker URL or name@domain.');
   }
 
+  useFetchImplementation(fetchWithTimeout);
   const bunkerPointer: BunkerPointer | null = await parseBunkerInput(trimmed);
   if (!bunkerPointer) {
     throw new Error('Could not parse bunker input. Expected bunker:// URL or name@domain.');

@@ -7,9 +7,10 @@ import type { SimplePool } from 'nostr-tools/pool';
 import { getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fetchWithTimeout, setRequestTimeoutMs } from '../src/lib/network.js';
+import { connectSignerViaBunker } from '../src/lib/active-signer.js';
 import { NostrConnectClient } from '../src/lib/nostr-connect-client.js';
 
-afterEach(() => { setRequestTimeoutMs(15_000); vi.restoreAllMocks(); });
+afterEach(() => { setRequestTimeoutMs(15_000); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('bounded network operations', () => {
   test('HTTP timeout covers a response that sends headers but never finishes its body', async () => {
@@ -37,6 +38,17 @@ describe('bounded network operations', () => {
         cwd: fileURLToPath(new URL('..', import.meta.url)), timeout: 2000,
       })).rejects.toMatchObject({ code: 1, killed: false, stderr: expect.stringContaining('Remote signer did not respond') });
     } finally { await relay.close(); }
+  });
+
+  test('signer name resolution uses the same bounded fetch and preserves request options', async () => {
+    const implementation = vi.fn(async (_url: unknown, init: RequestInit = {}) => {
+      expect(init.redirect).toBe('error');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      throw new Error('offline');
+    });
+    vi.stubGlobal('fetch', implementation);
+    await expect(connectSignerViaBunker('alice@example.com')).rejects.toThrow('Could not parse bunker input');
+    expect(implementation).toHaveBeenCalledOnce();
   });
 
 });

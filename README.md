@@ -87,6 +87,8 @@ pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
 pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
 
+See [docs/cli-guidelines.md](docs/cli-guidelines.md) for the guideline review, deliberate behavior choices, and maintainer checks.
+
 ## Network requests and automation
 
 Each HTTP request (including reading its response body) and remote signer operation has a 15-second timeout. Increase it for a slow provider or a signer requiring user approval:
