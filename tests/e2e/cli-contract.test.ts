@@ -60,4 +60,16 @@ describe('CLI conventions', () => {
     expect(result.stderr).toContain('Invalid JSON from stdin');
     expect(result.stderr).not.toContain('private note');
   });
+  test.each([
+    ['signer', 'wait', '--timeout-ms', '5junk'],
+    ['store', 'orders', 'invalid', '--limit', '2.5'],
+    ['petition', 'sign', 'invalid', '--pow-difficulty', '-1'],
+    ['--request-timeout', '0', 'keygen'],
+  ])('numeric flags reject invalid values before doing work: %j', async (...args) => {
+    const result = await run(args);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/must be/);
+  });
+
 });

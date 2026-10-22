@@ -42,7 +42,12 @@ The unscoped npm package named `nowhere` is an unrelated project and is not main
 ## Development
 
 ```bash
-pnpm install
+# The codec is a development-only dependency bundled into releases.
+# From the directory containing nowhere-cli:
+git clone https://github.com/5t34k/nowhere.git source-nowhere
+git -C source-nowhere checkout fcc8c3c5f295e5d40a77409b33c7f696c383d137
+cd nowhere-cli
+pnpm install --frozen-lockfile
 pnpm test
 pnpm build
 ```
@@ -81,6 +86,18 @@ pnpm cli fundraiser donate invoice 'https://hostednowhere.com/s#...' --sats 5000
 pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
 pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
+
+## Network requests and automation
+
+Each HTTP request (including reading its response body) and remote signer operation has a 15-second timeout. Increase it for a slow provider or a signer requiring user approval:
+
+```bash
+nowhere --request-timeout 120 signer connect --bunker-file ./bunker-uri --json
+```
+
+Remote signer authorization links are displayed immediately on stderr so the request can be approved while it waits. Pairing with `signer wait` separately defaults to 120 seconds; `--timeout-ms` must be a positive integer. Invalid numeric flags fail before opening a relay or creating an invoice. Relay connections use the Nostr client's connection/query timeouts. Long-running watch mode is intentional; use `--watch-seconds` to bound it, or Ctrl-C to stop.
+
+Interactive creation requires explicit `--interactive`/`-i`. It can also consume newline-separated scripted answers from a pipe; use JSON/flags for stable automation. Prompts go to stderr. `--input -` reads JSON until EOF; when stdin is a terminal it fails immediately with instructions instead of waiting for data. A downstream command closing stdout ends quietly (for example, piping through `head`).
 
 ## Secret input and local state
 

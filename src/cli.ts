@@ -26,12 +26,13 @@ import {
 import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from './lib/fundraiser-donate.js';
 import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
-import { configureHelp, configureSecretFiles, requestedHelp } from './lib/cli-conventions.js';
+import { configureHelp, configureNumericOptions, configureSecretFiles, positiveSeconds, requestedHelp } from './lib/cli-conventions.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
 import { resolveInteractiveCreateInput } from './lib/create-interactive.js';
 import { resolveCreateRawInput, type CreateCommandOptions } from './lib/create-long-form.js';
 import { createMessageTipInvoice, listMessageTipMethods } from './lib/message-tips.js';
 import { printOutput } from './lib/output.js';
+import { setRequestTimeoutMs } from './lib/network.js';
 import { destroyPool, getPetitionRelays } from './lib/relay.js';
 import {
   countPetitionSignatures,
@@ -1010,6 +1011,8 @@ program
   .name('nowhere')
   .description('CLI for Nowhere fragments, signing, and encryption.')
   .version(packageManifest.version)
+  .option('--request-timeout <seconds>', 'Timeout for each HTTP request and remote signer operation.', positiveSeconds, 15)
+  .hook('preAction', () => { setRequestTimeoutMs(Math.ceil(program.opts().requestTimeout * 1000)); })
   .showHelpAfterError();
 
 program
@@ -1099,6 +1102,7 @@ signerCommand
     const signer = await connectSignerViaBunker(options.bunker, {
       onAuthUrl: (url) => {
         authUrl = url;
+        process.stderr.write(`Authorize the remote signer: ${url}\n`);
       },
     });
     try {
@@ -1150,6 +1154,7 @@ signerCommand
       timeoutMs: options.timeoutMs,
       onAuthUrl: (url) => {
         authUrl = url;
+        process.stderr.write(`Authorize the remote signer: ${url}\n`);
       },
     });
     try {
@@ -2902,6 +2907,7 @@ addWatchOptions(forumRoom
   });
 
 program.addHelpText('after', '\nExamples:\n  nowhere create message --name Hello --description World --json\n  nowhere inspect <url> --json\n  nowhere signer status\n');
+configureNumericOptions(program);
 configureSecretFiles(program);
 configureHelp(program);
 process.stdout.on('error', (error: NodeJS.ErrnoException) => {

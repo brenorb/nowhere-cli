@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from './network.js';
 export interface LnurlPayParams {
   callback: string;
   minSendable: number;
@@ -21,7 +22,7 @@ export async function resolveLightningAddress(address: string): Promise<LnurlPay
 
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await fetchWithTimeout(url);
   } catch {
     throw new Error("Unable to reach the seller's payment provider. Please contact the seller to complete your purchase.");
   }
@@ -46,7 +47,7 @@ export async function fetchInvoice(callback: string, amountMsats: number, commen
 
   let response: Response;
   try {
-    response = await fetch(url.toString());
+    response = await fetchWithTimeout(url.toString());
   } catch {
     throw new Error("Unable to reach the seller's payment provider. Please contact the seller to complete your purchase.");
   }

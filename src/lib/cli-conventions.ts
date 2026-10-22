@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import type { Command } from 'commander';
+import { InvalidArgumentError, type Command } from 'commander';
 
 const docs = 'https://github.com/brenorb/nowhere-cli#readme';
 
@@ -56,4 +56,30 @@ export function configureSecretFiles(command: Command): void {
     });
   }
   for (const child of command.commands) configureSecretFiles(child);
+}
+
+export function positiveSeconds(value: string): number {
+  const number = Number(value);
+  if (!value.trim() || !Number.isFinite(number) || number <= 0 || number > 2147483) {
+    throw new InvalidArgumentError('must be a positive number of seconds (at most 2147483).');
+  }
+  return number;
+}
+
+export function configureNumericOptions(command: Command): void {
+  const integers = new Set(['timeout-ms', 'since', 'until', 'limit', 'received-sats', 'pow-difficulty', 'min-bytes', 'max-bytes']);
+  for (const option of command.options) {
+    if (!integers.has(option.name())) continue;
+    option.argParser((value: string) => {
+      const number = Number(value);
+      const minimum = ['timeout-ms', 'limit'].includes(option.name()) ? 1 : 0;
+      const maximum = option.name() === 'pow-difficulty' ? 32 : option.name() === 'timeout-ms' ? 2147483647 : Number.MAX_SAFE_INTEGER;
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < minimum || number > maximum) {
+        throw new InvalidArgumentError(`must be an integer between ${minimum} and ${maximum}.`);
+      }
+      // Keep existing option value types, whose consumers parse validated strings.
+      return option.name() === 'timeout-ms' ? number : value;
+    });
+  }
+  for (const child of command.commands) configureNumericOptions(child);
 }
