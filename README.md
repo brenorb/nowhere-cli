@@ -58,25 +58,25 @@ Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package
 
 ```bash
 pnpm cli keygen --json
-pnpm cli pubkey --secret nsec1...
+pnpm cli pubkey --secret-file ./nostr-key
 pnpm cli inspect 'https://hostednowhere.com/s#...'
-pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
-pnpm cli signer connect --bunker 'bunker://...' --json
+pnpm cli sign 'https://hostednowhere.com/s#...' --secret-file ./nostr-key --json
+pnpm cli signer connect --bunker-file ./bunker-uri --json
 pnpm cli signer start --relay wss://bucket.coracle.social --json
-pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
+pnpm cli signer wait --uri-file ./pairing-uri --client-secret-file ./client-key --json
 pnpm cli create store --input ./store.json --use-signer --json
 pnpm cli create drop -i --json
 pnpm cli create --interactive --json
-pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
-pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
-pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
+pnpm cli encrypt 'https://hostednowhere.com/s#...' --password-file ./password
+pnpm cli decrypt 'https://hostednowhere.com/s#...' --password-file ./password
+pnpm cli create petition --input ./petition.json --sign-secret-file ./nostr-key --encrypt-password-file ./password
 pnpm cli update 'https://hostednowhere.com/s#...' --patch ./patch.json --json
 pnpm cli store order 'https://hostednowhere.com/s#...' --input ./order.json --relay ws://127.0.0.1:7000 --json
-pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret nsec1... --json
-pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret nsec1... --json
+pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret-file ./nostr-key --json
+pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret-file ./nostr-key --json
 pnpm cli forum torrent parse ./archive.torrent --json
 pnpm cli forum torrent check 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --json
-pnpm cli forum torrent publish 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --secret nsec1... --json
+pnpm cli forum torrent publish 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --secret-file ./nostr-key --json
 pnpm cli forum posts 'https://hostednowhere.com/s#...' --moderated --profile-relay wss://relay.example.com --json
 pnpm cli forum wot check 'https://hostednowhere.com/s#...' --scope post --author npub1... --json
 pnpm cli store checkout quote 'https://hostednowhere.com/s#...' --cart ./cart.json --buyer-country US --json
@@ -112,7 +112,12 @@ nowhere encrypt '<url>' --password-file ./password --json
 nowhere create message --name Hello --description World --sign-secret-file ./nostr-key --json
 ```
 
-Use a protected UTF-8 file to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported.
+Use a protected UTF-8 file (owner-only mode `0600`) to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported for compatibility, but the file forms are preferred.
+
+For AI agents, combine a secret file with `--input -` (or a payload file) and
+`--json`. Secret files do not consume stdin or prompt, so the payload and credential
+have separate sources. Use `--use-signer` when an authorized remote signer is
+available; remote signer authorization can still require approval in that signer.
 
 Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). Only absolute `XDG_CONFIG_HOME` values are used; relative values fall back to the default. New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
 
