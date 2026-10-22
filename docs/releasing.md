@@ -24,7 +24,7 @@ npm view nowhere-cli name version dist-tags bin repository --json
 1. Start from a clean `main` synchronized with `origin/main`.
 2. Choose the next semantic version and update `package.json` and `CHANGELOG.md`.
 3. Run `pnpm check` and `npm publish --dry-run`.
-4. Run `npm pack`, install the resulting tarball into a clean temporary directory, and verify `nowhere --version` and a representative command.
+4. Run `pnpm test:e2e:packed` to build and pack the executable, install the tarball into a clean temporary directory, and verify local artifact roundtrips plus NIP46 signing and local relay publication/query. The harness checks version and installed runtime dependencies, then removes its temporary keys, state, artifacts and installation.
 5. Verify npm authentication with `npm whoami` and confirm the account can publish `nowhere-cli`.
 6. Publish with `npm publish --access public`.
 7. Verify `npm view nowhere-cli version` and install the published version from the registry.

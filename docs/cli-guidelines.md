@@ -23,6 +23,24 @@ Optional additions such as generated man pages or completion scripts are not req
 
 ## Maintainer checks
 
-Run `pnpm check` for lint, types, and the entire test suite, and `pnpm build` for the bundled executable. The e2e suite uses local mock relays and a mock remote signer. `tests/e2e/cli-contract.test.ts`, `tests/secret-input.test.ts`, and `tests/network-timeouts.test.ts` exercise the added contracts, including a stalled HTTP body and a remote signer timeout that must actually exit. Follow [releasing.md](releasing.md) to check a packed installation.
+Run `pnpm check` for lint, types, and the source test suite, and `pnpm build` for the bundled executable. Run `pnpm test:e2e:packed` to build and pack the release, install the tarball in an isolated temporary directory, and exercise the installed `nowhere` binary outside the source checkout. The e2e suite uses local mock relays and a mock remote signer. `tests/e2e/cli-contract.test.ts`, `tests/secret-input.test.ts`, and `tests/network-timeouts.test.ts` exercise the added contracts, including a stalled HTTP body and a remote signer timeout that must actually exit. Follow [releasing.md](releasing.md) to check a packed installation.
 
 The local `@nowhere/codec` dependency is a pre-existing development dependency. README pins the upstream checkout used for validation; npm releases bundle that codec and do not resolve the local path for users.
+
+## Packed installation end-to-end coverage
+
+`pnpm test:e2e:packed` uses fresh test keys and private temporary files to check
+key generation/public-key derivation, create/inspect, signing/verification,
+encryption/decryption, wrong-password failure, and signed encrypted updates.
+It then starts a local WebSocket relay and NIP46 signer, authorizes and restores
+an installed CLI session across processes, publishes and queries a local forum
+post, verifies the stored event signatures and content, and disconnects the
+persisted signer. State file/directory permissions and package independence from
+the development codec checkout are checked explicitly. The harness removes its
+installation, keys, state and artifacts afterward.
+
+Package installation can require npm registry access to retrieve runtime
+dependencies. Protocol traffic stays on loopback and never publishes to public
+relays. These checks establish installed-package behavior with controlled peers;
+they do not establish interoperability with every public relay, remote signer,
+or payment service.
