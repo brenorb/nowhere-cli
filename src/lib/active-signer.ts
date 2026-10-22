@@ -1,6 +1,7 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { writePrivateFile } from './private-files.js';
+import { readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { nip19 } from 'nostr-tools';
 import { parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
@@ -213,8 +214,7 @@ async function readPersistedSigner(): Promise<PersistedSigner | null> {
 
 async function writePersistedSigner(signer: PersistedSigner): Promise<void> {
   const path = getActiveSignerPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(signer, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(signer, null, 2)}\n`);
 }
 
 async function clearPersistedSigner(): Promise<void> {

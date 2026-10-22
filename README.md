@@ -82,6 +82,21 @@ pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
 pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
 
+## Secret input and local state
+
+Every key, password, pairing URI, bunker URI, and room access-code option also has a `-file` form. For example:
+
+```bash
+nowhere pubkey --secret-file ./nostr-key --json
+nowhere sign '<url>' --secret-file ./nostr-key --json
+nowhere encrypt '<url>' --password-file ./password --json
+nowhere create message --name Hello --description World --sign-secret-file ./nostr-key --json
+```
+
+Use a protected UTF-8 file to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported.
+
+Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. `nowhere signer disconnect` removes the saved remote signer session.
+
 ## Builder Input
 
 `create <tool>` accepts the upstream codec shape directly as JSON.

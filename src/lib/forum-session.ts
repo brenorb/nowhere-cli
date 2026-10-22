@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { writePrivateFile } from './private-files.js';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { describeSecret, generateSecretMaterial, type SecretMaterial } from './keys.js';
 
 const SESSION_SECRET_ENV = 'NOWHERE_FORUM_SESSION_SECRET';
@@ -37,8 +38,7 @@ async function readPersistedForumSession(path: string): Promise<PersistedForumSe
 }
 
 async function writePersistedForumSession(path: string, session: PersistedForumSession): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(session, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(session, null, 2)}\n`);
 }
 
 export async function getForumSessionMaterial(): Promise<SecretMaterial> {

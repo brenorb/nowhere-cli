@@ -26,7 +26,7 @@ import {
 import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from './lib/fundraiser-donate.js';
 import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
-import { configureHelp, requestedHelp } from './lib/cli-conventions.js';
+import { configureHelp, configureSecretFiles, requestedHelp } from './lib/cli-conventions.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
 import { resolveInteractiveCreateInput } from './lib/create-interactive.js';
 import { resolveCreateRawInput, type CreateCommandOptions } from './lib/create-long-form.js';
@@ -2902,6 +2902,7 @@ addWatchOptions(forumRoom
   });
 
 program.addHelpText('after', '\nExamples:\n  nowhere create message --name Hello --description World --json\n  nowhere inspect <url> --json\n  nowhere signer status\n');
+configureSecretFiles(program);
 configureHelp(program);
 process.stdout.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EPIPE') process.exit(0);

@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { writePrivateFile } from './private-files.js';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 const STORE_MANAGE_FILE = 'store-manage.json';
 
@@ -72,8 +73,7 @@ async function readState(): Promise<StoreManageState> {
 
 async function writeState(state: StoreManageState): Promise<void> {
   const path = statePath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export async function getStoreManageRecord(storeId: string): Promise<StoreManageRecord> {
