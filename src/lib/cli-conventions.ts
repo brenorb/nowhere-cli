@@ -33,6 +33,7 @@ export function configureSecretFiles(command: Command): void {
     const required = option.mandatory;
     option.makeOptionMandatory(false);
     const fileFlag = `--${option.name()}-file`;
+    option.description += ` For agents and scripts, prefer ${fileFlag} to avoid exposing secrets in shell history and process listings.`;
     command.option(`${fileFlag} <path>`, `Read ${option.long} from a UTF-8 file (avoids shell history and process listings).`);
     command.hook('preAction', async () => {
       const key = option.attributeName();

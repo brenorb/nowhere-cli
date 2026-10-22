@@ -18,6 +18,13 @@ async function directory() { const dir = await mkdtemp(join(tmpdir(), 'nowhere-s
 const run = (...args: string[]) => exec(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], { cwd });
 
 describe('secret files', () => {
+  test('secret option help directs agents to the file source without requiring prompts', async () => {
+    const result = await run('pubkey', '--help');
+    expect(result.stdout).toMatch(/prefer\s+--secret-file/);
+    expect(result.stdout).toContain('shell history');
+    expect(result.stderr).toBe('');
+  });
+
   test('required secrets can be read from a file without putting the key in argv', async () => {
     const path = join(await directory(), 'key');
     await writeFile(path, `${'1'.repeat(64)}\n`);
