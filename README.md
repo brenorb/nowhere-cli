@@ -18,7 +18,7 @@ Current scope in this first slice:
 - store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
 
-Commands currently optimized for agent use expose `--json` output.
+Commands print labeled human-readable output by default. Use `--json` for stable structured output in scripts; watch commands emit one JSON object per line. Results go to stdout, while errors and prompts go to stderr. `nowhere`, `nowhere --help`, and `nowhere help <command>` offer help without performing work. Add `--help` to any command before `--` to inspect its options even if other arguments are incomplete.
 
 The canonical feature/user-story audit is tracked in [docs/nowhere-cli-feature-tracker.xlsx](docs/nowhere-cli-feature-tracker.xlsx), including expected behavior, source evidence, baseline failures, fixes, and post-fix evidence.
 
@@ -42,7 +42,12 @@ The unscoped npm package named `nowhere` is an unrelated project and is not main
 ## Development
 
 ```bash
-pnpm install
+# The codec is a development-only dependency bundled into releases.
+# From the directory containing nowhere-cli:
+git clone https://github.com/5t34k/nowhere.git source-nowhere
+git -C source-nowhere checkout fcc8c3c5f295e5d40a77409b33c7f696c383d137
+cd nowhere-cli
+pnpm install --frozen-lockfile
 pnpm test
 pnpm build
 ```
@@ -81,6 +86,35 @@ pnpm cli fundraiser donate invoice 'https://hostednowhere.com/s#...' --sats 5000
 pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
 pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
+
+See [docs/cli-guidelines.md](docs/cli-guidelines.md) for the guideline review, deliberate behavior choices, and maintainer checks.
+
+## Network requests and automation
+
+Each HTTP request (including reading its response body) and remote signer operation has a 15-second timeout. Increase it for a slow provider or a signer requiring user approval:
+
+```bash
+nowhere --request-timeout 120 signer connect --bunker-file ./bunker-uri --json
+```
+
+Remote signer authorization links are displayed immediately on stderr so the request can be approved while it waits. Pairing with `signer wait` separately defaults to 120 seconds; `--timeout-ms` must be a positive integer. Invalid numeric flags fail before opening a relay or creating an invoice. Relay connections use the Nostr client's connection/query timeouts. Long-running watch mode is intentional; use `--watch-seconds` to bound it, or Ctrl-C to stop. Watch and request durations must be positive and at most 2147483 seconds; larger values are rejected before networking.
+
+Interactive creation requires explicit `--interactive`/`-i`. It can also consume newline-separated scripted answers from a pipe; use JSON/flags for stable automation. Prompts go to stderr. `--input -` reads JSON until EOF; when stdin is a terminal it fails immediately with instructions instead of waiting for data. A downstream command closing stdout ends quietly (for example, piping through `head`).
+
+## Secret input and local state
+
+Every key, password, pairing URI, bunker URI, and room access-code option also has a `-file` form. For example:
+
+```bash
+nowhere pubkey --secret-file ./nostr-key --json
+nowhere sign '<url>' --secret-file ./nostr-key --json
+nowhere encrypt '<url>' --password-file ./password --json
+nowhere create message --name Hello --description World --sign-secret-file ./nostr-key --json
+```
+
+Use a protected UTF-8 file to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported.
+
+Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). Only absolute `XDG_CONFIG_HOME` values are used; relative values fall back to the default. New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
 
 ## Builder Input
 

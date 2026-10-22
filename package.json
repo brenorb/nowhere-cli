@@ -39,6 +39,7 @@
     "lint:fix": "eslint --fix \"src/**/*.ts\" \"tests/**/*.ts\" tsup.config.ts vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e:packed": "tsx --test tests/e2e/packed-cli.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
     "prepack": "pnpm build",
     "prepublishOnly": "pnpm check"

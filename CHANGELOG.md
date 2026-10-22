@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file. This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- File input alternatives for secret keys, passwords, pairing and bunker URIs, and room access codes.
+- A configurable `--request-timeout` for HTTP requests and remote signer operations.
+- Regression tests covering help, machine output, secret persistence, stalled requests, and malformed input/state.
+
+### Changed
+
+- Print labeled human-readable output by default; scripts should request the existing `--json` format.
+- Show examples and documentation/support links in help, including help requested with incomplete arguments.
+- Keep persisted credentials and state private and replace them atomically.
+
+### Fixed
+
+- Exit successfully for a bare invocation and handle closed output pipes quietly.
+- Diagnose unknown option typos, malformed JSON, and invalid numeric flags before performing work.
+- Bound stalled HTTP response bodies and remote signer requests, close failed signer sessions, and show authorization URLs while waiting.
+- Redact malformed nsec decoder diagnostics so secret files never echo private keys on failure.
+- Preserve malformed local state for recovery instead of deleting credentials or overwriting order notes.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added

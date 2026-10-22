@@ -1,3 +1,4 @@
+import { getRequestTimeoutMs } from './network.js';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { decrypt as nip04Decrypt } from 'nostr-tools/nip04';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
@@ -294,9 +295,27 @@ export class NostrConnectClient {
     );
 
     const responsePromise = new Promise<string>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('Remote signer did not respond before the request timeout. Check the signer and relay, then retry or increase --request-timeout.'));
+      }, getRequestTimeoutMs());
+      this.pending.set(id, {
+        resolve(value) { clearTimeout(timer); resolve(value); },
+        reject(error) { clearTimeout(timer); reject(error); },
+      });
     });
-    this.pool.publish(this.relays, event);
+    try {
+      const publishes = this.pool.publish(this.relays, event);
+      void Promise.allSettled(publishes).then((results) => {
+        if (results.length > 0 && results.every((result) => result.status === 'rejected')) {
+          this.pending.get(id)?.reject(new Error('Could not reach the remote signer relay. Check --relay and retry.'));
+          this.pending.delete(id);
+        }
+      });
+    } catch {
+      this.pending.get(id)?.reject(new Error('Could not publish the remote signer request.'));
+      this.pending.delete(id);
+    }
     return responsePromise;
   }
 }

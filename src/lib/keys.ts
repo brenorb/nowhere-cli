@@ -14,11 +14,14 @@ export interface SecretMaterial {
 export function parseSecretKeyInput(value: string): Uint8Array {
   const trimmed = value.trim();
   if (trimmed.startsWith('nsec1')) {
-    const decoded = nip19.decode(trimmed);
-    if (decoded.type !== 'nsec') {
-      throw new Error('Expected an nsec secret key.');
+    try {
+      const decoded = nip19.decode(trimmed);
+      if (decoded.type !== 'nsec') throw new Error('Wrong key type');
+      return decoded.data as Uint8Array;
+    } catch {
+      // Bech32 decoder diagnostics include their input, which is a private key.
+      throw new Error('Invalid nsec secret key. Check its format and checksum.');
     }
-    return decoded.data as Uint8Array;
   }
 
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
