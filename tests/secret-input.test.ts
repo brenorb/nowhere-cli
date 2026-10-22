@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { nip19 } from 'nostr-tools';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { getActiveSignerPath, getActiveSignerStatus } from '../src/lib/active-signer.js';
 import { setStoreOrderNote } from '../src/lib/store-manage-state.js';
@@ -64,6 +65,22 @@ describe('secret files', () => {
     await writeFile(path, '{broken order notes');
     await expect(setStoreOrderNote('store', 'order', 'new note')).rejects.toThrow('Failed to read store management state');
     expect(await readFile(path, 'utf8')).toBe('{broken order notes');
+  });
+
+  test.each(['--secret', '--secret-file'])('malformed nsec never leaks its key payload through errors (%s)', async (flag) => {
+    const valid = nip19.nsecEncode(new Uint8Array(32).fill(1));
+    const secret = `${valid.slice(0, -1)}${valid.endsWith('q') ? 'p' : 'q'}`;
+    const path = join(await directory(), 'invalid-key');
+    await writeFile(path, secret);
+    try {
+      await run('pubkey', flag, flag.endsWith('-file') ? path : secret, '--json');
+      throw new Error('Expected invalid key to fail');
+    } catch (error) {
+      const result = error as { stdout: string; stderr: string };
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('Invalid nsec secret key');
+      expect(result.stderr).not.toContain(secret.slice(0, -6));
+    }
   });
 
 });

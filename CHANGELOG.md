@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file. This project fo
 - Exit successfully for a bare invocation and handle closed output pipes quietly.
 - Diagnose unknown option typos, malformed JSON, and invalid numeric flags before performing work.
 - Bound stalled HTTP response bodies and remote signer requests, close failed signer sessions, and show authorization URLs while waiting.
+- Redact malformed nsec decoder diagnostics so secret files never echo private keys on failure.
 - Preserve malformed local state for recovery instead of deleting credentials or overwriting order notes.
 
 ## [0.3.0] - 2026-07-31
