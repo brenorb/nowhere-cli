@@ -83,4 +83,23 @@ describe('secret files', () => {
     }
   });
 
+  test('corrupt forum session errors preserve the private file without echoing its contents', async () => {
+    const dir = await directory();
+    vi.stubEnv('XDG_CONFIG_HOME', dir);
+    vi.stubEnv('NOWHERE_FORUM_SESSION_SECRET', '');
+    await mkdir(join(dir, 'nowhere-cli'));
+    const path = getForumSessionPath();
+    const privateContents = 'MY-PRIVATE-SESSION-SECRET';
+    await writeFile(path, privateContents);
+    try {
+      await getForumSessionMaterial();
+      throw new Error('Expected corrupt session to fail');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain('Restore a backup');
+      expect(message).not.toContain('MY-PRIVATE');
+    }
+    expect(await readFile(path, 'utf8')).toBe(privateContents);
+  });
+
 });
