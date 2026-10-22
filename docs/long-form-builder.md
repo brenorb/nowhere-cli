@@ -36,7 +36,7 @@ Interactive mode is intentionally separate from `--input <path>`.
 | `art` | Site name and SVG markup |
 | `forum` | Site name and owner pubkey |
 
-Store, petition, and forum owner pubkeys can be inferred from `--sign-secret` or `--use-signer`. Pubkeys accept Nowhere base64url, hex, `npub`, and copied `nostr:npub...` values.
+Store, petition, and forum owner pubkeys can be inferred from `--sign-secret-file` or `--use-signer`. Pubkeys accept Nowhere base64url, hex, `npub`, and copied `nostr:npub...` values.
 
 ## Hosted builder fields
 
@@ -90,9 +90,16 @@ pnpm cli create store \
   --name "Freedom Market" \
   --item 'name=Sticker Pack;price=7.5;tag=f' \
   --item 'name=Zine;price=12;description=Printed field notes.' \
-  --sign-secret nsec1... \
+  --sign-secret-file ./nostr-key \
   --json
 ```
+
+Provide `./nostr-key` as a private UTF-8 file (mode `0600`) containing the hex or
+`nsec` key, optionally followed by one newline. The file option never prompts and
+leaves stdin available for an agent's payload. The legacy `--sign-secret` flag
+remains supported, but exposes its value in shell history/process arguments;
+do not combine it with `--sign-secret-file`. An authorized remote signer can be
+selected with `--use-signer` instead of either local key source.
 
 Supported item fields:
 
@@ -129,7 +136,7 @@ Available art-specific flags:
 
 ## Owner pubkey inference
 
-For `store`, `petition`, and `forum`, the CLI will infer the required owner pubkey from `--sign-secret` or `--use-signer` when you omit `--pubkey`.
+For `store`, `petition`, and `forum`, the CLI will infer the required owner pubkey from `--sign-secret-file` or `--use-signer` when you omit `--pubkey`. The legacy direct key flag uses the same inference.
 
 ## Implementation reuse
 
