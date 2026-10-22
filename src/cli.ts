@@ -26,6 +26,7 @@ import {
 import { createFundraiserDonationInvoice, listFundraiserDonationMethods } from './lib/fundraiser-donate.js';
 import { formatPetitionSignaturesCsv, formatStoreOrdersCsv } from './lib/csv-export.js';
 import { readJsonInput } from './lib/io.js';
+import { configureHelp, requestedHelp } from './lib/cli-conventions.js';
 import { describeSecret, generateSecretMaterial } from './lib/keys.js';
 import { resolveInteractiveCreateInput } from './lib/create-interactive.js';
 import { resolveCreateRawInput, type CreateCommandOptions } from './lib/create-long-form.js';
@@ -455,7 +456,7 @@ function normalizeLeadingDashPositionalArg(root: Command, argv: string[]): strin
   }
 
   const candidate = tokens[argumentIndex] as string;
-  if (!candidate.startsWith('-') || candidate === '-') {
+  if (!/^-[A-Za-z0-9_-]{30,}$/.test(candidate)) {
     return argv;
   }
 
@@ -2900,7 +2901,16 @@ addWatchOptions(forumRoom
     );
   });
 
-program.parseAsync(normalizeLeadingDashPositionalArg(program, process.argv)).catch((error: unknown) => {
+program.addHelpText('after', '\nExamples:\n  nowhere create message --name Hello --description World --json\n  nowhere inspect <url> --json\n  nowhere signer status\n');
+configureHelp(program);
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+const helpCommand = requestedHelp(program, process.argv.slice(2));
+if (helpCommand || process.argv.length === 2) {
+  (helpCommand ?? program).outputHelp();
+} else program.parseAsync(normalizeLeadingDashPositionalArg(program, process.argv)).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;

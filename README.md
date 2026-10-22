@@ -18,7 +18,7 @@ Current scope in this first slice:
 - store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
 
-Commands currently optimized for agent use expose `--json` output.
+Commands print labeled human-readable output by default. Use `--json` for stable structured output in scripts; watch commands emit one JSON object per line. Results go to stdout, while errors and prompts go to stderr. `nowhere`, `nowhere --help`, and `nowhere help <command>` offer help without performing work. Add `--help` to any command before `--` to inspect its options even if other arguments are incomplete.
 
 The canonical feature/user-story audit is tracked in [docs/nowhere-cli-feature-tracker.xlsx](docs/nowhere-cli-feature-tracker.xlsx), including expected behavior, source evidence, baseline failures, fixes, and post-fix evidence.
 
