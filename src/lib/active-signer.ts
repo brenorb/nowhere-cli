@@ -243,9 +243,8 @@ export async function restoreActiveSigner(): Promise<CliSigner | null> {
 
   try {
     return createNip46Signer(persisted);
-  } catch {
-    await clearPersistedSigner();
-    return null;
+  } catch (error) {
+    throw new Error(`Failed to restore the persisted signer at ${getActiveSignerPath()}. Restore a backup or remove it to reconnect.`, { cause: error });
   }
 }
 

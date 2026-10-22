@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { nip19 } from 'nostr-tools';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { getActiveSignerPath, getActiveSignerStatus } from '../src/lib/active-signer.js';
+import { getActiveSignerPath, getActiveSignerStatus, restoreActiveSigner } from '../src/lib/active-signer.js';
 import { setStoreOrderNote } from '../src/lib/store-manage-state.js';
 import { getForumSessionMaterial, getForumSessionPath } from '../src/lib/forum-session.js';
 
@@ -100,6 +100,17 @@ describe('secret files', () => {
       expect(message).not.toContain('MY-PRIVATE');
     }
     expect(await readFile(path, 'utf8')).toBe(privateContents);
+  });
+
+  test.each(['invalid-secret', '01', '0'.repeat(64)])('semantically corrupt signer credentials are preserved (%s)', async (clientSecretHex) => {
+    const dir = await directory();
+    vi.stubEnv('XDG_CONFIG_HOME', dir);
+    await mkdir(join(dir, 'nowhere-cli'));
+    const path = getActiveSignerPath();
+    const contents = JSON.stringify({ type: 'nip46', pubkeyHex: '1'.repeat(64), bunkerUri: 'bunker://example', bunkerPubkey: '2'.repeat(64), clientSecretHex, relays: [] });
+    await writeFile(path, contents);
+    await expect(restoreActiveSigner()).rejects.toThrow('persisted signer');
+    expect(await readFile(path, 'utf8')).toBe(contents);
   });
 
 });
