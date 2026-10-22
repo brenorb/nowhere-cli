@@ -1,6 +1,6 @@
+import { configHome } from './config.js';
 import { writePrivateFile } from './private-files.js';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const STORE_MANAGE_FILE = 'store-manage.json';
@@ -23,10 +23,6 @@ export interface StoreOrderOverlay {
   confirmed: boolean;
   hidden: boolean;
   note: string | null;
-}
-
-function configHome(): string {
-  return process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
 }
 
 function statePath(): string {

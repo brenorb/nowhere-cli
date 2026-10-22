@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -111,6 +111,12 @@ describe('secret files', () => {
     await writeFile(path, contents);
     await expect(restoreActiveSigner()).rejects.toThrow('persisted signer');
     expect(await readFile(path, 'utf8')).toBe(contents);
+  });
+
+  test.each(['relative-config', '.', '../elsewhere'])('relative XDG_CONFIG_HOME is ignored (%s)', (value) => {
+    vi.stubEnv('XDG_CONFIG_HOME', value);
+    expect(getActiveSignerPath()).toBe(join(homedir(), '.config', 'nowhere-cli', 'active-signer.json'));
+    expect(getForumSessionPath()).toBe(join(homedir(), '.config', 'nowhere-cli', 'forum-session.json'));
   });
 
 });

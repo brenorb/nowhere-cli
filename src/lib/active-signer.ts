@@ -1,7 +1,7 @@
+import { configHome } from './config.js';
 import { fetchWithTimeout } from './network.js';
 import { writePrivateFile } from './private-files.js';
 import { readFile, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { nip19 } from 'nostr-tools';
@@ -130,12 +130,8 @@ class Nip46Signer implements CliSigner {
   }
 }
 
-function signerConfigHome(): string {
-  return process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
-}
-
 export function getActiveSignerPath(): string {
-  return join(signerConfigHome(), 'nowhere-cli', ACTIVE_SIGNER_FILE);
+  return join(configHome(), 'nowhere-cli', ACTIVE_SIGNER_FILE);
 }
 
 function normalizeRelays(relays: string[]): string[] {

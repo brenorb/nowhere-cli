@@ -69,6 +69,10 @@ export function positiveSeconds(value: string): number {
 export function configureNumericOptions(command: Command): void {
   const integers = new Set(['timeout-ms', 'since', 'until', 'limit', 'received-sats', 'pow-difficulty', 'min-bytes', 'max-bytes']);
   for (const option of command.options) {
+    if (option.name() === 'watch-seconds') {
+      option.argParser((value: string) => { positiveSeconds(value); return value; });
+      continue;
+    }
     if (!integers.has(option.name())) continue;
     option.argParser((value: string) => {
       const number = Number(value);

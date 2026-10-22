@@ -97,7 +97,7 @@ Each HTTP request (including reading its response body) and remote signer operat
 nowhere --request-timeout 120 signer connect --bunker-file ./bunker-uri --json
 ```
 
-Remote signer authorization links are displayed immediately on stderr so the request can be approved while it waits. Pairing with `signer wait` separately defaults to 120 seconds; `--timeout-ms` must be a positive integer. Invalid numeric flags fail before opening a relay or creating an invoice. Relay connections use the Nostr client's connection/query timeouts. Long-running watch mode is intentional; use `--watch-seconds` to bound it, or Ctrl-C to stop.
+Remote signer authorization links are displayed immediately on stderr so the request can be approved while it waits. Pairing with `signer wait` separately defaults to 120 seconds; `--timeout-ms` must be a positive integer. Invalid numeric flags fail before opening a relay or creating an invoice. Relay connections use the Nostr client's connection/query timeouts. Long-running watch mode is intentional; use `--watch-seconds` to bound it, or Ctrl-C to stop. Watch and request durations must be positive and at most 2147483 seconds; larger values are rejected before networking.
 
 Interactive creation requires explicit `--interactive`/`-i`. It can also consume newline-separated scripted answers from a pipe; use JSON/flags for stable automation. Prompts go to stderr. `--input -` reads JSON until EOF; when stdin is a terminal it fails immediately with instructions instead of waiting for data. A downstream command closing stdout ends quietly (for example, piping through `head`).
 
@@ -114,7 +114,7 @@ nowhere create message --name Hello --description World --sign-secret-file ./nos
 
 Use a protected UTF-8 file to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported.
 
-Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
+Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). Only absolute `XDG_CONFIG_HOME` values are used; relative values fall back to the default. New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
 
 ## Builder Input
 

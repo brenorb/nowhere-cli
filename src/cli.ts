@@ -130,10 +130,7 @@ function readWatchDurationMs(value: string | undefined): number | undefined {
     return undefined;
   }
 
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    fail('--watch-seconds must be a positive number.');
-  }
+  const seconds = positiveSeconds(value);
   return Math.ceil(seconds * 1000);
 }
 

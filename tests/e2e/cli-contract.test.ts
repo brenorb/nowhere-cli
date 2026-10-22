@@ -65,6 +65,7 @@ describe('CLI conventions', () => {
     ['store', 'orders', 'invalid', '--limit', '2.5'],
     ['petition', 'sign', 'invalid', '--pow-difficulty', '-1'],
     ['--request-timeout', '0', 'keygen'],
+    ['forum', 'posts', 'invalid', '--watch-seconds', '1e308'],
   ])('numeric flags reject invalid values before doing work: %j', async (...args) => {
     const result = await run(args);
     expect(result.code).not.toBe(0);

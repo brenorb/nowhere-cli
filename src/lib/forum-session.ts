@@ -1,6 +1,6 @@
+import { configHome } from './config.js';
 import { writePrivateFile } from './private-files.js';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describeSecret, generateSecretMaterial, type SecretMaterial } from './keys.js';
 
@@ -12,8 +12,7 @@ interface PersistedForumSession {
 }
 
 export function getForumSessionPath(): string {
-  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
-  return join(configHome, 'nowhere-cli', SESSION_FILE);
+  return join(configHome(), 'nowhere-cli', SESSION_FILE);
 }
 
 async function readPersistedForumSession(path: string): Promise<PersistedForumSession | null> {
