@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { startMockRelay } from './support/mockRelay.js';
 import { createServer } from 'node:http';
 import type { SimplePool } from 'nostr-tools/pool';
 import { getPublicKey } from 'nostr-tools/pure';
@@ -25,4 +29,14 @@ describe('bounded network operations', () => {
     setRequestTimeoutMs(20);
     try { await expect(client.getPublicKey()).rejects.toThrow('Remote signer did not respond'); } finally { client.close(); }
   });
+  test('CLI closes relay resources after a signer request times out', async () => {
+    const relay = await startMockRelay();
+    try {
+      const uri = `bunker://${getPublicKey(Buffer.from('2'.repeat(64), 'hex'))}?relay=${encodeURIComponent(relay.url)}`;
+      await expect(promisify(execFile)(process.execPath, ['--import', 'tsx', 'src/cli.ts', '--request-timeout', '0.05', 'signer', 'connect', '--bunker', uri], {
+        cwd: fileURLToPath(new URL('..', import.meta.url)), timeout: 2000,
+      })).rejects.toMatchObject({ code: 1, killed: false, stderr: expect.stringContaining('Remote signer did not respond') });
+    } finally { await relay.close(); }
+  });
+
 });

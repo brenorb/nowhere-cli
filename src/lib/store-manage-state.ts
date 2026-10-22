@@ -59,6 +59,9 @@ async function readState(): Promise<StoreManageState> {
   try {
     const raw = await readFile(statePath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<StoreManageState>;
+    if (!parsed || !parsed.stores || typeof parsed.stores !== 'object' || Array.isArray(parsed.stores)) {
+      throw new Error('Invalid store management state format.');
+    }
     const stores = Object.fromEntries(
       Object.entries(parsed.stores ?? {}).map(([storeId, record]) => [storeId, normalizeRecord(record)]),
     );
@@ -67,7 +70,7 @@ async function readState(): Promise<StoreManageState> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { stores: {} };
     }
-    return { stores: {} };
+    throw new Error(`Failed to read store management state at ${statePath()}. Restore a backup before retrying.`, { cause: error });
   }
 }
 

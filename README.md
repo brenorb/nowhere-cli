@@ -112,7 +112,7 @@ nowhere create message --name Hello --description World --sign-secret-file ./nos
 
 Use a protected UTF-8 file to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported.
 
-Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. `nowhere signer disconnect` removes the saved remote signer session.
+Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
 
 ## Builder Input
 

@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { getActiveSignerPath, getActiveSignerStatus } from '../src/lib/active-signer.js';
+import { setStoreOrderNote } from '../src/lib/store-manage-state.js';
 import { getForumSessionMaterial, getForumSessionPath } from '../src/lib/forum-session.js';
 
 const exec = promisify(execFile);
@@ -44,4 +46,24 @@ describe('secret files', () => {
       expect(JSON.parse(await readFile(path, 'utf8')).secretHex).toHaveLength(64);
     } finally { process.umask(before); }
   });
+  test('corrupt persisted credentials are reported and preserved for recovery', async () => {
+    const dir = await directory();
+    vi.stubEnv('XDG_CONFIG_HOME', dir);
+    await mkdir(join(dir, 'nowhere-cli'));
+    const path = getActiveSignerPath();
+    await writeFile(path, '{broken private credentials');
+    await expect(getActiveSignerStatus()).rejects.toThrow('Failed to read the persisted signer');
+    expect(await readFile(path, 'utf8')).toBe('{broken private credentials');
+  });
+
+  test('corrupt order state cannot be silently overwritten by a mutation', async () => {
+    const dir = await directory();
+    vi.stubEnv('XDG_CONFIG_HOME', dir);
+    await mkdir(join(dir, 'nowhere-cli'));
+    const path = join(dir, 'nowhere-cli', 'store-manage.json');
+    await writeFile(path, '{broken order notes');
+    await expect(setStoreOrderNote('store', 'order', 'new note')).rejects.toThrow('Failed to read store management state');
+    expect(await readFile(path, 'utf8')).toBe('{broken order notes');
+  });
+
 });
