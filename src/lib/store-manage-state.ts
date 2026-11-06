@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { configHome } from './config.js';
+import { writePrivateFile } from './private-files.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const STORE_MANAGE_FILE = 'store-manage.json';
 
@@ -22,10 +23,6 @@ export interface StoreOrderOverlay {
   confirmed: boolean;
   hidden: boolean;
   note: string | null;
-}
-
-function configHome(): string {
-  return process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
 }
 
 function statePath(): string {
@@ -58,6 +55,9 @@ async function readState(): Promise<StoreManageState> {
   try {
     const raw = await readFile(statePath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<StoreManageState>;
+    if (!parsed || !parsed.stores || typeof parsed.stores !== 'object' || Array.isArray(parsed.stores)) {
+      throw new Error('Invalid store management state format.');
+    }
     const stores = Object.fromEntries(
       Object.entries(parsed.stores ?? {}).map(([storeId, record]) => [storeId, normalizeRecord(record)]),
     );
@@ -66,14 +66,13 @@ async function readState(): Promise<StoreManageState> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { stores: {} };
     }
-    return { stores: {} };
+    throw new Error(`Failed to read store management state at ${statePath()}. Restore a backup before retrying.`, { cause: error });
   }
 }
 
 async function writeState(state: StoreManageState): Promise<void> {
   const path = statePath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export async function getStoreManageRecord(storeId: string): Promise<StoreManageRecord> {

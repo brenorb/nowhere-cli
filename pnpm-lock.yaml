@@ -25,8 +25,8 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.6.0)
       '@nowhere/codec':
-        specifier: file:../source-nowhere/nowhere/packages/codec
-        version: file:../source-nowhere/nowhere/packages/codec
+        specifier: github:brenorb/nowhere#fcc8c3c5f295e5d40a77409b33c7f696c383d137&path:/nowhere/packages/codec
+        version: https://codeload.github.com/brenorb/nowhere/tar.gz/fcc8c3c5f295e5d40a77409b33c7f696c383d137#path:/nowhere/packages/codec
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.2
@@ -453,8 +453,9 @@ packages:
     resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
     engines: {node: '>= 20.19.0'}
 
-  '@nowhere/codec@file:../source-nowhere/nowhere/packages/codec':
-    resolution: {directory: ../source-nowhere/nowhere/packages/codec, type: directory}
+  '@nowhere/codec@https://codeload.github.com/brenorb/nowhere/tar.gz/fcc8c3c5f295e5d40a77409b33c7f696c383d137#path:/nowhere/packages/codec':
+    resolution: {gitHosted: true, integrity: sha512-Ky8Rs2wH5yuBDd25f3deCVC1wk86kEX9egFseWeu0YHB5bzkidcl7p6mw5Lh/0fJXb64ChSDy7ZxkCWoebPJWQ==, path: /nowhere/packages/codec, tarball: https://codeload.github.com/brenorb/nowhere/tar.gz/fcc8c3c5f295e5d40a77409b33c7f696c383d137}
+    version: 0.1.0
 
   '@rollup/rollup-android-arm-eabi@4.62.2':
     resolution: {integrity: sha512-6o7ZLZK+BeenkZCFNDXqpbjw9bD6nuWonvS/lwQJp7NoVVxm6p3qE7qQ5jGuBjiFsgvqjD8mZAU5oWxTmbOeOg==}
@@ -1564,7 +1565,7 @@ snapshots:
 
   '@noble/hashes@2.0.1': {}
 
-  '@nowhere/codec@file:../source-nowhere/nowhere/packages/codec':
+  '@nowhere/codec@https://codeload.github.com/brenorb/nowhere/tar.gz/fcc8c3c5f295e5d40a77409b33c7f696c383d137#path:/nowhere/packages/codec':
     dependencies:
       pako: 2.2.0
 

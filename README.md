@@ -18,7 +18,7 @@ Current scope in this first slice:
 - store checkout orchestration, fundraiser donation helpers, and message tip helpers, including Lightning invoice flows
 - forum WoT and banned-word moderation checks for CLI-safe listing/filtering flows
 
-Commands currently optimized for agent use expose `--json` output.
+Commands print labeled human-readable output by default. Use `--json` for stable structured output in scripts; watch commands emit one JSON object per line. Results go to stdout, while errors and prompts go to stderr. `nowhere`, `nowhere --help`, and `nowhere help <command>` offer help without performing work. Add `--help` to any command before `--` to inspect its options even if other arguments are incomplete.
 
 The canonical feature/user-story audit is tracked in [docs/nowhere-cli-feature-tracker.xlsx](docs/nowhere-cli-feature-tracker.xlsx), including expected behavior, source evidence, baseline failures, fixes, and post-fix evidence.
 
@@ -41,12 +41,14 @@ The unscoped npm package named `nowhere` is an unrelated project and is not main
 
 ## Development
 
+Use Node.js 22.13 or later in the 22.x line, or Node.js 24 or later, with pnpm 11.25.0. From a clone of this repository, run:
+
 ```bash
-git clone https://github.com/brenorb/nowhere.git ../source-nowhere
-git -C ../source-nowhere checkout 01afb378acfcdb6250cac366aef22aec8adf5802
 pnpm install --frozen-lockfile
 pnpm check
 ```
+
+pnpm fetches the development codec from the Git revision pinned in the manifest and lockfile. The build bundles the codec into the CLI. Run `pnpm test:e2e:packed` to install the built tarball in a clean directory and exercise it against local fixtures.
 
 Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package identity, tarball verification, versioning, tags, and GitHub Releases.
 
@@ -54,25 +56,25 @@ Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package
 
 ```bash
 pnpm cli keygen --json
-pnpm cli pubkey --secret nsec1...
+pnpm cli pubkey --secret-file ./nostr-key
 pnpm cli inspect 'https://hostednowhere.com/s#...'
-pnpm cli sign 'https://hostednowhere.com/s#...' --secret nsec1... --json
-pnpm cli signer connect --bunker 'bunker://...' --json
+pnpm cli sign 'https://hostednowhere.com/s#...' --secret-file ./nostr-key --json
+pnpm cli signer connect --bunker-file ./bunker-uri --json
 pnpm cli signer start --relay wss://bucket.coracle.social --json
-pnpm cli signer wait --uri 'nostrconnect://...' --client-secret <hex> --json
+pnpm cli signer wait --uri-file ./pairing-uri --client-secret-file ./client-key --json
 pnpm cli create store --input ./store.json --use-signer --json
 pnpm cli create drop -i --json
 pnpm cli create --interactive --json
-pnpm cli encrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
-pnpm cli decrypt 'https://hostednowhere.com/s#...' --password 'correct horse battery staple'
-pnpm cli create petition --input ./petition.json --sign-secret nsec1... --encrypt-password 'opsec'
+pnpm cli encrypt 'https://hostednowhere.com/s#...' --password-file ./password
+pnpm cli decrypt 'https://hostednowhere.com/s#...' --password-file ./password
+pnpm cli create petition --input ./petition.json --sign-secret-file ./nostr-key --encrypt-password-file ./password
 pnpm cli update 'https://hostednowhere.com/s#...' --patch ./patch.json --json
 pnpm cli store order 'https://hostednowhere.com/s#...' --input ./order.json --relay ws://127.0.0.1:7000 --json
-pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret nsec1... --json
-pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret nsec1... --json
+pnpm cli petition sign 'https://hostednowhere.com/s#...' --input ./signature.json --secret-file ./nostr-key --json
+pnpm cli forum post 'https://hostednowhere.com/s#...' --input ./post.json --secret-file ./nostr-key --json
 pnpm cli forum torrent parse ./archive.torrent --json
 pnpm cli forum torrent check 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --json
-pnpm cli forum torrent publish 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --secret nsec1... --json
+pnpm cli forum torrent publish 'https://hostednowhere.com/s#...' --torrent-file ./archive.torrent --category 'docs > manuals' --secret-file ./nostr-key --json
 pnpm cli forum posts 'https://hostednowhere.com/s#...' --moderated --profile-relay wss://relay.example.com --json
 pnpm cli forum wot check 'https://hostednowhere.com/s#...' --scope post --author npub1... --json
 pnpm cli store checkout quote 'https://hostednowhere.com/s#...' --cart ./cart.json --buyer-country US --json
@@ -82,6 +84,40 @@ pnpm cli fundraiser donate invoice 'https://hostednowhere.com/s#...' --sats 5000
 pnpm cli message tip methods 'https://hostednowhere.com/s#...' --json
 pnpm cli message tip invoice 'https://hostednowhere.com/s#...' --sats 2100 --json
 ```
+
+See [docs/cli-guidelines.md](docs/cli-guidelines.md) for the guideline review, deliberate behavior choices, and maintainer checks.
+
+## Network requests and automation
+
+Each HTTP request (including reading its response body) and remote signer operation has a 15-second timeout. Increase it for a slow provider or a signer requiring user approval:
+
+```bash
+nowhere --request-timeout 120 signer connect --bunker-file ./bunker-uri --json
+```
+
+Remote signer authorization links are displayed immediately on stderr so the request can be approved while it waits. Pairing with `signer wait` separately defaults to 120 seconds; `--timeout-ms` must be a positive integer. Invalid numeric flags fail before opening a relay or creating an invoice. Relay connections use the Nostr client's connection/query timeouts. Long-running watch mode is intentional; use `--watch-seconds` to bound it, or Ctrl-C to stop. Watch and request durations must be positive and at most 2147483 seconds; larger values are rejected before networking.
+
+Interactive creation requires explicit `--interactive`/`-i`. It can also consume newline-separated scripted answers from a pipe; use JSON/flags for stable automation. Prompts go to stderr. `--input -` reads JSON until EOF; when stdin is a terminal it fails immediately with instructions instead of waiting for data. A downstream command closing stdout ends quietly (for example, piping through `head`).
+
+## Secret input and local state
+
+Every key, password, pairing URI, bunker URI, and room access-code option also has a `-file` form. For example:
+
+```bash
+nowhere pubkey --secret-file ./nostr-key --json
+nowhere sign '<url>' --secret-file ./nostr-key --json
+nowhere encrypt '<url>' --password-file ./password --json
+nowhere create message --name Hello --description World --sign-secret-file ./nostr-key --json
+```
+
+Use a protected UTF-8 file (owner-only mode `0600`) to avoid recording secrets in shell history or process listings. File contents are read exactly except for one final newline. Direct and file forms are mutually exclusive. An unreadable or empty secret file fails before the command performs work. Existing direct flags remain supported for compatibility, but the file forms are preferred.
+
+For AI agents, combine a secret file with `--input -` (or a payload file) and
+`--json`. Secret files do not consume stdin or prompt, so the payload and credential
+have separate sources. Use `--use-signer` when an authorized remote signer is
+available; remote signer authorization can still require approval in that signer.
+
+Signer credentials, forum session keys, and store management state live under `$XDG_CONFIG_HOME/nowhere-cli` (default `~/.config/nowhere-cli`). Only absolute `XDG_CONFIG_HOME` values are used; relative values fall back to the default. New writes use a private directory (0700), private files (0600), and atomic replacement to avoid partial state after interruption. Back up that directory if you need to preserve identities and local order notes. Malformed state fails with recovery instructions and is preserved; restore a backup or deliberately remove the damaged file before retrying. `nowhere signer disconnect` removes the saved remote signer session.
 
 ## Builder Input
 
@@ -138,7 +174,7 @@ The CLI now exposes the main relay-backed workflows directly:
 
 Publish-style commands accept structured JSON via `--input <path>` or `--input -` from stdin. Relay overrides use repeated `--relay <url>` flags; if omitted, the CLI falls back to the relay tags embedded in the site where that flow supports it. Forum commands also accept `--salt <value>` anywhere the website derives an alternate salted forum keyspace.
 
-Any runtime command that opens a store, petition, fundraiser, message, or forum now also accepts `--password <password>` so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site.
+Any runtime command that opens a store, petition, fundraiser, message, or forum also accepts `--password-file <path>` (or the legacy `--password <password>`) so encrypted links behave the same way they do on the website: the CLI decrypts first, then runs the downstream order, checkout, signature, tip, donation, moderation, or forum flow against the decrypted site. Prefer the file source to keep the password out of process arguments and shell history.
 
 `signer connect`, `signer start`, `signer wait`, `signer status`, and `signer disconnect` manage a persisted remote NIP-46 session under `XDG_CONFIG_HOME/nowhere-cli/active-signer.json`. Use `signer start` when you need a generated `nostrconnect://` deeplink or QR payload first, then complete pairing with `signer wait`. `signer connect` and `signer wait` both surface `authUrl` when the signer requires an out-of-band approval step. Use `--use-signer` anywhere the website can reuse an existing signer instead of exporting an `nsec`: `sign`, `create`, `update`, `store receipt decrypt`, `store orders`, `store verify`, `store status publish`, `petition sign`, `petition signatures`, `forum post`, `forum reply`, `forum torrent publish`, `forum torrent reply`, `forum chat send`, `forum private send`, `forum room announce`, and `forum room send`.
 
@@ -154,7 +190,7 @@ Encrypted fragments are accepted as normal positional arguments even when the ba
 
 `store orders` and `petition signatures` require exactly one output mode when an explicit format is requested: use either `--csv` or `--json`, not both. This prevents a script from silently receiving CSV when it expected JSON.
 
-Anonymous forum posts, replies, torrent submissions, room flows, and general chat now reuse one persisted forum session secret under `XDG_CONFIG_HOME/nowhere-cli/forum-session.json` by default, which matches the website's stable in-session anonymous identity behavior. Set `NOWHERE_FORUM_SESSION_SECRET` or pass `--session-secret` where supported to override that identity explicitly.
+Anonymous forum posts, replies, torrent submissions, room flows, and general chat now reuse one persisted forum session secret under `XDG_CONFIG_HOME/nowhere-cli/forum-session.json` by default, which matches the website's stable in-session anonymous identity behavior. Prefer `--session-secret-file` where supported to override that identity explicitly; `NOWHERE_FORUM_SESSION_SECRET` and the direct `--session-secret` flag remain compatible alternatives.
 
 `forum chat send` accepts `--session-secret` to override the advertised stable session pubkey that the website uses for private chat routing. Without it, the CLI advertises the persisted forum session automatically. `forum private send` targets a discovered session pubkey directly, and `forum private list` decrypts the inbox for either the persisted session or an explicit `--session-secret`.
 
@@ -171,9 +207,3 @@ The forum list surfaces also support CLI-native follow mode: pass `--watch` to k
 `fundraiser donate methods` exposes the parsed donation handles from the fundraiser's `l` tag, and `fundraiser donate invoice` can turn the Lightning handle into a live invoice for a sats amount.
 
 `message tip methods` exposes the parsed tip handles from the message's `l` tag, and `message tip invoice` can turn the Lightning handle into a live invoice for a sats amount.
-
-CI checks out the reference codec at that fixed revision, then runs lint, type
-checks, all tests, and the production build. It also installs the packed CLI in a
-clean directory. These gates run on PRs, main and version tags. Manual npm
-publication keeps the same check in `prepublishOnly`; tagging does not publish
-to npm.

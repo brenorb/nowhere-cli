@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from './network.js';
 import { formatCurrency, resolveTags, type Item, type StoreData, type Tag } from '@nowhere/codec';
 import { fetchInvoice, resolveLightningAddress } from './lightning.js';
 import {
@@ -217,7 +218,7 @@ function computeShipping(
 
 async function fetchCoingecko(currency: string): Promise<number | null> {
   try {
-    const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${currency.toLowerCase()}`);
+    const response = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${currency.toLowerCase()}`);
     if (!response.ok) {
       return null;
     }
@@ -231,7 +232,7 @@ async function fetchCoingecko(currency: string): Promise<number | null> {
 
 async function fetchYadio(currency: string): Promise<number | null> {
   try {
-    const response = await fetch(`https://api.yadio.io/exrates/${currency.toUpperCase()}`);
+    const response = await fetchWithTimeout(`https://api.yadio.io/exrates/${currency.toUpperCase()}`);
     if (!response.ok) {
       return null;
     }
@@ -245,7 +246,7 @@ async function fetchYadio(currency: string): Promise<number | null> {
 
 async function fetchKraken(currency: string): Promise<number | null> {
   try {
-    const response = await fetch(`https://api.kraken.com/0/public/Ticker?pair=XBT${currency.toUpperCase()}`);
+    const response = await fetchWithTimeout(`https://api.kraken.com/0/public/Ticker?pair=XBT${currency.toUpperCase()}`);
     if (!response.ok) {
       return null;
     }

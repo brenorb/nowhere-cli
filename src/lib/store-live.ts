@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from './network.js';
 import { base64urlToHex, type Item, type StoreData, type Tag } from '@nowhere/codec';
 import { createHash, createHmac } from 'node:crypto';
 import { Filter } from 'nostr-tools/filter';
@@ -467,7 +468,7 @@ async function fetchKrakenHistorical(currency: string, timestamp: number): Promi
   try {
     const pair = `XBT${currency.toUpperCase()}`;
     const since = timestamp - 60;
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=1&since=${since}`,
     );
     if (!response.ok) {
@@ -508,7 +509,7 @@ async function fetchCoingeckoHistorical(currency: string, timestamp: number): Pr
     const dd = String(date.getUTCDate()).padStart(2, '0');
     const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
     const yyyy = date.getUTCFullYear();
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://api.coingecko.com/api/v3/coins/bitcoin/history?date=${dd}-${mm}-${yyyy}&localization=false`,
     );
     if (!response.ok) {

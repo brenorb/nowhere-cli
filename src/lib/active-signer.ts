@@ -1,14 +1,16 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { configHome } from './config.js';
+import { fetchWithTimeout } from './network.js';
+import { writePrivateFile } from './private-files.js';
+import { readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { nip19 } from 'nostr-tools';
-import { parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
+import { parseBunkerInput, useFetchImplementation, type BunkerPointer } from 'nostr-tools/nip46';
 import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { parseSecretKeyInput } from './keys.js';
 import { NostrConnectClient } from './nostr-connect-client.js';
-import { getPool } from './relay.js';
+import { destroyPool, getPool } from './relay.js';
 
 const ACTIVE_SIGNER_FILE = 'active-signer.json';
 const NOSTR_CONNECT_APP_NAME = 'Nowhere CLI';
@@ -128,12 +130,8 @@ class Nip46Signer implements CliSigner {
   }
 }
 
-function signerConfigHome(): string {
-  return process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
-}
-
 export function getActiveSignerPath(): string {
-  return join(signerConfigHome(), 'nowhere-cli', ACTIVE_SIGNER_FILE);
+  return join(configHome(), 'nowhere-cli', ACTIVE_SIGNER_FILE);
 }
 
 function normalizeRelays(relays: string[]): string[] {
@@ -200,21 +198,18 @@ async function readPersistedSigner(): Promise<PersistedSigner | null> {
         relays: normalizeRelays(parsed.relays.map(String)),
       };
     }
-    await clearPersistedSigner();
-    return null;
+    throw new Error('Invalid persisted signer format.');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
-    await clearPersistedSigner();
-    return null;
+    throw new Error(`Failed to read the persisted signer at ${path}. Restore a backup or remove it to reconnect.`, { cause: error });
   }
 }
 
 async function writePersistedSigner(signer: PersistedSigner): Promise<void> {
   const path = getActiveSignerPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(signer, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(signer, null, 2)}\n`);
 }
 
 async function clearPersistedSigner(): Promise<void> {
@@ -244,9 +239,8 @@ export async function restoreActiveSigner(): Promise<CliSigner | null> {
 
   try {
     return createNip46Signer(persisted);
-  } catch {
-    await clearPersistedSigner();
-    return null;
+  } catch (error) {
+    throw new Error(`Failed to restore the persisted signer at ${getActiveSignerPath()}. Restore a backup or remove it to reconnect.`, { cause: error });
   }
 }
 
@@ -266,6 +260,7 @@ export async function connectSignerViaBunker(input: string, options?: {
     throw new Error('Enter a bunker URL or name@domain.');
   }
 
+  useFetchImplementation(fetchWithTimeout);
   const bunkerPointer: BunkerPointer | null = await parseBunkerInput(trimmed);
   if (!bunkerPointer) {
     throw new Error('Could not parse bunker input. Expected bunker:// URL or name@domain.');
@@ -287,18 +282,24 @@ export async function connectSignerViaBunker(input: string, options?: {
     onAuthUrl: options?.onAuthUrl,
   });
   client.open();
-  await client.connect(NOSTR_CONNECT_APP_PERMS.join(','));
-  const pubkeyHex = await client.getPublicKey();
-  const signer = new Nip46Signer(pubkeyHex, client, {
-    type: 'nip46',
-    pubkeyHex,
-    bunkerUri: stripSecretParam(trimmed),
-    bunkerPubkey: bunkerPointer.pubkey,
-    clientSecretHex,
-    relays,
-  });
-  await signer.persist();
-  return signer;
+  try {
+    await client.connect(NOSTR_CONNECT_APP_PERMS.join(','));
+    const pubkeyHex = await client.getPublicKey();
+    const signer = new Nip46Signer(pubkeyHex, client, {
+      type: 'nip46',
+      pubkeyHex,
+      bunkerUri: stripSecretParam(trimmed),
+      bunkerPubkey: bunkerPointer.pubkey,
+      clientSecretHex,
+      relays,
+    });
+    await signer.persist();
+    return signer;
+  } catch (error) {
+    client.close();
+    destroyPool();
+    throw error;
+  }
 }
 
 export async function disconnectActiveSigner(): Promise<{ connected: boolean; pubkeyHex: string | null; type: 'nip46' | null }> {
@@ -392,6 +393,7 @@ export async function connectSignerViaHandshake(options: {
     return signer;
   } catch (error) {
     client.close();
+    destroyPool();
     if ((error as Error)?.message === 'Aborted') {
       throw new Error(`Timed out waiting for a signer after ${Math.round(timeoutMs / 1000)}s.`, {
         cause: error,

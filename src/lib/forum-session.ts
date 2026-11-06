@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { configHome } from './config.js';
+import { writePrivateFile } from './private-files.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describeSecret, generateSecretMaterial, type SecretMaterial } from './keys.js';
 
 const SESSION_SECRET_ENV = 'NOWHERE_FORUM_SESSION_SECRET';
@@ -11,8 +12,7 @@ interface PersistedForumSession {
 }
 
 export function getForumSessionPath(): string {
-  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config');
-  return join(configHome, 'nowhere-cli', SESSION_FILE);
+  return join(configHome(), 'nowhere-cli', SESSION_FILE);
 }
 
 async function readPersistedForumSession(path: string): Promise<PersistedForumSession | null> {
@@ -29,16 +29,14 @@ async function readPersistedForumSession(path: string): Promise<PersistedForumSe
       return null;
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to read the persisted forum session at ${path}: ${message}`, {
+    throw new Error(`Failed to read the persisted forum session at ${path}. Restore a backup or remove it to create a new identity.`, {
       cause: error,
     });
   }
 }
 
 async function writePersistedForumSession(path: string, session: PersistedForumSession): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(session, null, 2)}\n`, 'utf8');
+  await writePrivateFile(path, `${JSON.stringify(session, null, 2)}\n`);
 }
 
 export async function getForumSessionMaterial(): Promise<SecretMaterial> {
