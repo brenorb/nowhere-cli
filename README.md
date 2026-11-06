@@ -41,16 +41,14 @@ The unscoped npm package named `nowhere` is an unrelated project and is not main
 
 ## Development
 
+Use Node.js 22.13 or later in the 22.x line, or Node.js 24 or later, with pnpm 11.25.0. From a clone of this repository, run:
+
 ```bash
-# The codec is a development-only dependency bundled into releases.
-# From the directory containing nowhere-cli:
-git clone https://github.com/5t34k/nowhere.git source-nowhere
-git -C source-nowhere checkout fcc8c3c5f295e5d40a77409b33c7f696c383d137
-cd nowhere-cli
 pnpm install --frozen-lockfile
-pnpm test
-pnpm build
+pnpm check
 ```
+
+pnpm fetches the development codec from the Git revision pinned in the manifest and lockfile. The build bundles the codec into the CLI. Run `pnpm test:e2e:packed` to install the built tarball in a clean directory and exercise it against local fixtures.
 
 Maintainers should follow [docs/releasing.md](docs/releasing.md) for npm package identity, tarball verification, versioning, tags, and GitHub Releases.
 

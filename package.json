@@ -40,7 +40,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e:packed": "tsx --test tests/e2e/packed-cli.ts",
-    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "prepack": "pnpm build",
     "prepublishOnly": "pnpm check"
   },
@@ -51,7 +51,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@nowhere/codec": "file:../source-nowhere/nowhere/packages/codec",
+    "@nowhere/codec": "github:brenorb/nowhere#fcc8c3c5f295e5d40a77409b33c7f696c383d137&path:/nowhere/packages/codec",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",

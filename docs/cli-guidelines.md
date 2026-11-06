@@ -23,9 +23,9 @@ Optional additions such as generated man pages or completion scripts are not req
 
 ## Maintainer checks
 
-Run `pnpm check` for lint, types, and the source test suite, and `pnpm build` for the bundled executable. Run `pnpm test:e2e:packed` to build and pack the release, install the tarball in an isolated temporary directory, and exercise the installed `nowhere` binary outside the source checkout. The e2e suite uses local mock relays and a mock remote signer. `tests/e2e/cli-contract.test.ts`, `tests/secret-input.test.ts`, and `tests/network-timeouts.test.ts` exercise the added contracts, including a stalled HTTP body and a remote signer timeout that must actually exit. Follow [releasing.md](releasing.md) to check a packed installation.
+Run `pnpm check` for lint, types, the source test suite, and the bundled executable. Run `pnpm test:e2e:packed` to build and pack the release, install the tarball in an isolated temporary directory, and exercise the installed `nowhere` binary outside the source checkout. The e2e suite uses local mock relays and a mock remote signer. `tests/e2e/cli-contract.test.ts`, `tests/secret-input.test.ts`, and `tests/network-timeouts.test.ts` exercise the added contracts, including a stalled HTTP body and a remote signer timeout that must actually exit. Follow [releasing.md](releasing.md) to check a packed installation.
 
-The local `@nowhere/codec` dependency is a pre-existing development dependency. README pins the upstream checkout used for validation; npm releases bundle that codec and do not resolve the local path for users.
+The manifest and lockfile pin `@nowhere/codec` to a Git revision. pnpm fetches it during development setup, and the build bundles it into the npm package.
 
 ## Packed installation end-to-end coverage
 
