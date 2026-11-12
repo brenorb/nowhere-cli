@@ -1,0 +1,25 @@
+---
+title: "Create a Nowhere site interactively"
+---
+stateDiagram-v2
+  s0: Checking create options
+  s1: Creation failed
+  s2: Filling missing fields
+  s3: Choosing the site type
+  s4: Reviewing the proposed site
+  s5: Building the site link
+  s6: Creation cancelled
+  s7: Site link created
+  [*] --> s0
+  s0 --> s1: report invalid options
+  s0 --> s2: open the site form
+  s0 --> s3: ask which site type to create
+  s2 --> s1: report an input or validation error
+  s2 --> s4: show the completed form
+  s3 --> s1: report an input or validation error
+  s3 --> s2: choose a supported site type
+  s4 --> s1: report an input or validation error
+  s4 --> s5: confirm or take the default
+  s4 --> s6: answer no
+  s5 --> s1: report build failure
+  s5 --> s7: return the site link
