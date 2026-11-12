@@ -1,0 +1,33 @@
+---
+title: "Nowhere create, update, and verify a protected link"
+---
+stateDiagram-v2
+  s0: Building the new page
+  s1: Opening the previous link
+  s2: The new link could not be created
+  s3: New page is ready
+  s4: New link is ready to share
+  s5: New page is encrypted
+  s6: New page is signed
+  s7: Checking the new link
+  s8: Page opens without a signature
+  s9: The password was rejected
+  s10: Signature verified
+  [*] --> s0
+  [*] --> s1
+  s0 --> s2: the page could not be built
+  s0 --> s3: the page contents are encoded
+  s1 --> s0: the previous page opens
+  s1 --> s2: the previous page could not be opened
+  s3 --> s4: the command prints the new link
+  s3 --> s2: the link could not be encrypted or the page could not be signed
+  s3 --> s5: the password protects the link
+  s3 --> s6: the owner signs the new page
+  s4 --> s7: the user checks the final link
+  s5 --> s4: the command prints the new link
+  s6 --> s4: the command prints the new link
+  s6 --> s5: the password protects the link
+  s6 --> s2: the link could not be encrypted
+  s7 --> s8: the page has no signature
+  s7 --> s9: the supplied password does not open it
+  s7 --> s10: the signature is valid
