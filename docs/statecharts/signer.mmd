@@ -1,0 +1,35 @@
+---
+title: "Pair and manage a Nowhere remote signer"
+---
+stateDiagram-v2
+  s0: Saved signer settings cannot be read
+  s1: No saved signer
+  s2: Signer settings saved
+  s3: Waiting for the bunker
+  s4: Waiting for a signer to pair
+  s5: Reading the signer's public key
+  s6: Pairing failed
+  s7: Saving signer settings
+  [*] --> s0
+  [*] --> s1
+  [*] --> s2
+  s0 --> s3: connect with a bunker
+  s0 --> s4: wait on a pairing URI
+  s1 --> s3: connect with a bunker
+  s1 --> s4: wait on a pairing URI
+  s2 --> s1: forget saved signer
+  s2 --> s3: connect with a bunker
+  s2 --> s4: wait on a pairing URI
+  s3 --> s5: signer authorizes the connection
+  s3 --> s6: report a pairing or save error
+  s4 --> s5: signer authorizes the connection
+  s4 --> s6: report a pairing or save error
+  s5 --> s6: report a pairing or save error
+  s5 --> s7: receive the public key
+  s6 --> s3: connect with a bunker
+  s6 --> s4: wait on a pairing URI
+  s6 --> s0: check saved signer settings
+  s6 --> s1: forget saved signer or check saved signer settings
+  s6 --> s2: check saved signer settings
+  s7 --> s2: save the signer locally
+  s7 --> s6: report a pairing or save error
