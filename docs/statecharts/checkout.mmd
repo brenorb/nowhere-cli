@@ -1,0 +1,30 @@
+---
+title: "Quote and begin a Nowhere store checkout"
+---
+stateDiagram-v2
+  s0: Reading cart, inventory and payment methods
+  s1: Checkout failed
+  s2: Checking whether the cart can proceed
+  s3: Quote returned
+  s4: Checking buyer details and method
+  s5: Preparing the payment amount
+  s6: Publishing the order
+  s7: Order published, requesting invoice
+  s8: Manual payment instructions returned
+  s9: Order published, invoice failed
+  s10: Lightning invoice returned
+  [*] --> s0
+  s0 --> s1: report failure
+  s0 --> s2: use the quote for checkout
+  s0 --> s3: return the quote
+  s2 --> s1: inventory or cart prevents checkout
+  s2 --> s4: inventory and cart can proceed
+  s4 --> s1: report failure
+  s4 --> s5: buyer details and method accepted
+  s5 --> s1: report failure
+  s5 --> s6: amount ready
+  s6 --> s1: report failure
+  s6 --> s7: publish before requesting the invoice
+  s6 --> s8: publish and return instructions
+  s7 --> s9: invoice cannot be obtained
+  s7 --> s10: invoice received
