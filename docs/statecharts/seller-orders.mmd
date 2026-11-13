@@ -1,0 +1,17 @@
+---
+title: "Find orders for a Nowhere store"
+---
+stateDiagram-v2
+  s0: Checking seller credentials
+  s1: Credentials missing or order unreadable
+  s2: Looking up order events
+  s3: Reading a candidate order
+  s4: Candidate skipped
+  s5: Order shown to seller
+  [*] --> s0
+  s0 --> s1: reject missing credentials
+  s0 --> s2: use seller credentials
+  s2 --> s3: read relay results
+  s3 --> s1: record an unreadable order
+  s3 --> s4: skip another store, duplicate or unrequested ID
+  s3 --> s5: accept a matching order
