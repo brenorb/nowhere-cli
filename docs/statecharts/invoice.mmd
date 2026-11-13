@@ -1,0 +1,21 @@
+---
+title: "Request a Nowhere tip or donation invoice"
+---
+stateDiagram-v2
+  s0: Checking the amount
+  s1: Invoice request failed
+  s2: Selecting a payment method
+  s3: Getting the provider amount limits
+  s4: Ready to request an invoice
+  s5: Waiting for the provider response
+  s6: Invoice available
+  [*] --> s0
+  s0 --> s1: reject the amount
+  s0 --> s2: accept a positive whole-sat amount
+  s2 --> s1: reject missing or unsupported method
+  s2 --> s3: select Lightning
+  s3 --> s1: report a provider or response error or reject amount outside provider limits
+  s3 --> s4: accept amount within provider limits
+  s4 --> s5: send invoice request
+  s5 --> s6: return the invoice
+  s5 --> s1: report a provider or response error
