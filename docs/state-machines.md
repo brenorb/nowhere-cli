@@ -33,7 +33,7 @@ All commands share [command preflight](../.cursor/skills/verify-nowhere-command-
 | `config.ts`, `private-files.ts` | Resolve state directory and stage replacement files, used by signer, forum session and bookkeeping. |
 | `fragments.ts`, `site-signature.ts`, `constants.ts` | Fragment and signature handling and shared constants. |
 | `forum-live.ts`, `forum-session.ts`, `forum-moderation.ts`, `torrent-bencode.ts` | Forum publish, receive, and filtering paths above. The torrent parser advances through the input buffer during metadata extraction. |
-| `relay.ts`, `network.ts` | Shared [relay publication and count handling](../.cursor/skills/verify-nowhere-relays/SKILL.md) and request deadlines. |
+| `relay.ts`, `network.ts` | Shared [relay publication and count handling](../.cursor/skills/verify-nowhere-relays/SKILL.md) and [HTTP request deadlines](../.cursor/skills/verify-nowhere-http-deadline/SKILL.md). |
 | `store-live.ts`, `store-checkout.ts`, `store-manage-state.ts` | Live order and inventory, checkout, and local order state. |
 | `contacts.ts`, `custom-payments.ts`, `payment-methods.ts`, `tips.ts` | Structured value parsing, serialization and method selection. These process a single supplied value or tag set and return values to the builder or payment flows. |
 | `fundraiser-donate.ts`, `message-tips.ts`, `lightning.ts`, `petition-live.ts` | Invoice and petition flows above. |
