@@ -1,0 +1,27 @@
+---
+title: "Watch Nowhere forum events"
+---
+stateDiagram-v2
+  s0: Loading initial events
+  s1: Watch failed
+  s2: Watch ended
+  s3: Stopping after the pending poll
+  s4: Initial events checked
+  s5: Looking for new events
+  s6: Live events checked
+  [*] --> s0
+  s0 --> s2: stop watching
+  s0 --> s1: report a read error
+  s0 --> s3: receive an exit signal
+  s0 --> s4: emit the initial snapshot
+  s3 --> s1: report a read error
+  s3 --> s4: emit the initial snapshot
+  s4 --> s5: wait before polling again
+  s4 --> s2: stop watching
+  s5 --> s2: stop watching
+  s5 --> s1: report a read error
+  s5 --> s3: receive an exit signal
+  s5 --> s6: emit only newly seen events
+  s3 --> s6: emit only newly seen events
+  s6 --> s5: wait before polling again
+  s6 --> s2: stop watching
