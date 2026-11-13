@@ -30,3 +30,5 @@ Reviewed main `fdf33c73fd2721dcf6209e0c4ee2e337cf315db9` and tag `v0.3.0` at `a6
 The dispatch model bounds one command and represents recognized help and flag validity as inputs. The secret file model bounds one option and treats unreadable or empty input as one failure. These models abstract command grammar, parsing details and I/O. They omit per-command behavior after successful preflight.
 
 TLC checked dispatch in 19 states and secret preflight in 36. The mutants move help after validation or allow two secret sources. In a disposable checkout, disable the early `requestedHelp` result in `cli.ts` or bypass the conflict guard in `configureSecretFiles`. The CLI contract or ambiguous-secret test catches the corresponding mutation. All 27 baseline tests passed. Restore and rerun before updating reviewed refs.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

@@ -35,3 +35,5 @@ sh scripts/check-cli-state-machine.sh "$skill/Verification.tla" "$skill/Verifica
 ```
 
 This config fails `SuccessChecksRequestedPayment`. The source replay uses a local relay and a mocked provider. In a disposable checkout, run `python3 "$skill/references/extend-rate-tests.py"` and the test suite above. The fixture checks fallback to one available provider and cache reuse. It also checks that a mismatched payment rejected with a rate can return success if neither provider has a rate. All eight tests passed with the added cases. The required-check config models treating an unavailable rate as failure when payment verification was requested.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

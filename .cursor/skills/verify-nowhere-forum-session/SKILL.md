@@ -36,3 +36,5 @@ sh scripts/check-cli-state-machine.sh "$skill/Session.tla" "$skill/Session-reuse
 ```
 
 The race check exits with an invariant violation. The reuse config checks a model alternative in which a caller encountering an existing identity at commit uses that identity. Its 44 states satisfy both rules. On changes, rerun the checks, compare the returned identities and update the reviewed refs and expected outcomes.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

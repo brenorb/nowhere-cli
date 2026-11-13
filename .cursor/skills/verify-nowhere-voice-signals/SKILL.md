@@ -29,3 +29,5 @@ pnpm exec vitest run tests/e2e/live-commands.test.ts -t 'forum commands publish 
 The model bounds one signaling candidate, groups non-join events together and abstracts the crypto and payload details. With private listing and no peer filter, the expected-channel test is satisfied without a comparison. Invalid joins can still appear with a false flag. The CLI transports signaling records and has no WebRTC call lifecycle.
 
 TLC checked `ListedSignalsMatch` and `JoinStatusMatches` in 480 states. The mutant ignores the requested channel. In a disposable checkout, run `python3 "$skill/references/extend-voice-test.py"` and rerun the forum publishing test. Bypassing the `expectedChannel` comparison in `listVoiceSignals` makes the wrong-channel assertion fail. Restore both disposable files, rerun and update the reviewed refs if the routing behavior changes.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

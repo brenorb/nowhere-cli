@@ -29,3 +29,5 @@ pnpm exec vitest run tests/e2e/live-commands.test.ts -t 'forum commands publish 
 The model bounds one submission and three author policies. It abstracts correct topic or reply parent, size, signing and relay outcomes, and leaves decryption and listing moderation to source checks and the moderation skill.
 
 TLC checked `PublishedMeetsPolicy` in 120 states. The mutant allows publication with a disallowed author mode. In a disposable checkout, bypass the signed-only guard in `resolveForumAuthor`. The loopback test for identity modes fails when a missing explicit identity is accepted. Three matching source tests passed in the restored code. Rerun the checks and update the reviewed refs when editing these gates.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

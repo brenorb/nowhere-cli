@@ -30,3 +30,5 @@ The torrent parser and publication module are identical at main `fdf33c73fd2721d
 The model bounds one request and treats parsing, relay reads, signing and publication as outcomes. Its duplicate rule covers results present in the observed snapshot. Concurrent publishers and stale relay reads are outside that rule. Replies use the forum's separate signature, routing and moderation logic.
 
 TLC checked `DuplicateNeverPublished` and `RequiresEnabledCategory` in 254 states. `Torrent-mutant.cfg` bypasses rejection for a duplicate. For a source replay, in a disposable checkout run `python3 "$skill/references/check-torrent-duplicate.py"` to add a second publish assertion to the existing loopback-relay test, then run the tests above. Bypassing `checked.duplicate` in `publishForumTorrentFromInput` makes the assertion fail. Restore both files and rerun the original tests before updating reviewed refs.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

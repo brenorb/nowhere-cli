@@ -29,3 +29,5 @@ Reviewed main `fdf33c73fd2721dcf6209e0c4ee2e337cf315db9` and tag `v0.3.0` at `a6
 The model bounds one build and installation, abstracts package manager and filesystem errors, and checks the development codec requirement at the installed-package smoke test. It omits registries, publishing and transitive dependency behavior. The local replay inspects the actual tarball. The two packed source tests installed the CLI into a temporary project and exercised local signing and relay fixtures.
 
 TLC checked 15 states. `Package-mutant.cfg` permits a package without the bundled codec. In a disposable checkout, replace `noExternal` with `external` for the codec in `tsup.config.ts`. The tarball replay detects the resulting external development import. Restore and rerun before updating the reviewed refs.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

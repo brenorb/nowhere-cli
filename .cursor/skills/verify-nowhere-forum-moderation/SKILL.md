@@ -30,3 +30,5 @@ pnpm exec vitest run tests/e2e/live-commands.test.ts -t 'forum moderation comman
 The model bounds four authors and three graph levels, with a cycle back to the owner. It uses a fixed follow graph and a Boolean result for case-insensitive text matching. Cached and failed fetches can change the graph that the CLI observes. The model assumes a resolved graph and leaves cache lifetime and relay selection outside the invariant.
 
 TLC checked `ShownObeysModeration` and `GraphDepthBound` in 128 states. `Moderation-mutant.cfg` skips banned-word filtering. The local fixture exercises the production depth-zero and filter predicates. In a disposable checkout, make `passesForumModeration` return true after the author check and rerun the fixture. It rejects the mutation for a mixed-case banned word. Two source tests on a loopback relay passed for moderated listings and torrent replies. Rerun these checks and update the reviewed refs if changing the moderation rules.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

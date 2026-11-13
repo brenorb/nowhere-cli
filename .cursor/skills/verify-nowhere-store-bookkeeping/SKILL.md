@@ -39,3 +39,5 @@ sh scripts/check-cli-state-machine.sh "$skill/OverlayWrites.tla" "$skill/Overlay
 ```
 
 `AcknowledgedUpdatesPersist` fails under the current sequence. Both calls read the old file, each modifies its own snapshot, and the second commit overwrites the first. The local fixture ran a hide and a note concurrently. Both operations returned success, but the reread showed only one change. The 13-state merge config represents an atomic merge of distinct updates. Recheck the model and fixture when changing local persistence, then update the reviewed refs and expected outcomes.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.

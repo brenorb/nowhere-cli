@@ -28,3 +28,5 @@ pnpm exec vitest run tests/e2e/live-commands.test.ts -t 'forum commands publish 
 The model covers one candidate and abstracts key correctness, payload shape, signature verification, and target selection as independent outcomes. A general read always meets the target predicate. The model omits relay fan-out, watch deduplication, moderation and message ordering.
 
 TLC checked `ShownMatchesChannel` in 120 states. The mutant bypasses the target filter. In a disposable checkout, run `python3 "$skill/references/extend-chat-test.py"` and rerun the first forum test above. Removing the optional peer comparison from `listPrivateChatMessages` makes the other-author assertion fail. Restore both disposable files, rerun the tests and update the reviewed refs on changes.
+
+Use pstack’s `/statechart` to inspect the shortest path for a failing rule or visualize the checked flow. When the source changes, update the reviewed revision after rechecking the model and source fixture.
