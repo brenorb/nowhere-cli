@@ -1,0 +1,22 @@
+---
+title: "Sign a Nowhere petition"
+---
+stateDiagram-v2
+  s0: Checking your petition response
+  s1: Signature could not be submitted
+  s2: Encrypting your response
+  s3: Computing proof of work
+  s4: Signing and verifying the event
+  s5: Publishing to relays
+  s6: Signature published
+  [*] --> s0
+  s0 --> s1: report missing required information
+  s0 --> s2: accept response
+  s2 --> s1: report a submission error
+  s2 --> s3: protect the response for the petition owner
+  s3 --> s1: report a submission error
+  s3 --> s4: finish computing proof of work
+  s4 --> s1: report a submission error
+  s4 --> s5: verify the signed event
+  s5 --> s1: report a submission error
+  s5 --> s6: receive relay acknowledgement
